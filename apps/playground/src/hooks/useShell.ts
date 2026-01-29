@@ -1,4 +1,4 @@
-import { VirtualProcess,ContainerManager, ProcessEvent} from '@open-web-container/api';
+import { VirtualProcess,ContainerManager, ProcessEvent} from '@remodl-web-container/api';
 import { useState, useEffect, useCallback, useRef } from 'react';
 interface UseShellOptions {
     osc?: boolean;

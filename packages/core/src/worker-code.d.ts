@@ -1,4 +1,4 @@
-declare module '@open-web-container/core/worker-code' {
+declare module '@remodl-web-container/core/worker-code' {
     const workerCode: string;
     export default workerCode;
 }

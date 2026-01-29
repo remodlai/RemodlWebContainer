@@ -1,4 +1,4 @@
-import { ContainerManager } from '@open-web-container/api';
+import { ContainerManager } from '@remodl-web-container/api';
 import { useEffect, useMemo, useState } from 'react';
 
 interface FileSystemNode {

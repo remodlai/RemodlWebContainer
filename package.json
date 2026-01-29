@@ -1,7 +1,7 @@
 {
-	"name": "open-web-container",
+	"name": "remodl-web-container",
 	"version": "0.1.0",
-	"description": "A browser-based virtual container runtime that enables server-like JavaScript execution environments directly in the browser. OpenWebContainer provides a sandboxed environment with a virtual file system, process management, and shell capabilities, making it possible to run server-side JavaScript applications entirely in the browser.",
+	"description": "A browser-based virtual container runtime that enables server-like JavaScript execution environments directly in the browser. RemodlWebContainer provides a sandboxed environment with a virtual file system, process management, and shell capabilities, making it possible to run server-side JavaScript applications entirely in the browser.",
 	"directories": {
 		"example": "examples",
 		"test": "test"
@@ -11,7 +11,7 @@
 		"dev": "turbo run dev --parallel",
 		"build": "turbo run build",
 		"install": "turbo run install",
-		"playground": "turbo run dev --filter='@open-web-container/playground'"
+		"playground": "turbo run dev --filter='@remodl-web-container/playground'"
 	},
 	"author": "",
 	"license": "MIT",

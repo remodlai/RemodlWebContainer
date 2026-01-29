@@ -1,5 +1,5 @@
 {
-	"name": "@open-web-container/core",
+	"name": "@remodl-web-container/core",
 	"version": "0.1.0",
 	"type": "module",
 	"main": "./dist/index.js",

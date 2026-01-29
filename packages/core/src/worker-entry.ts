@@ -1,8 +1,8 @@
 import { SpawnPayload, WorkerMessage, WorkerRequestMessage, WorkerResponse, WorkerResponseMessage } from 'worker-code';
-import { OpenWebContainer } from './container';
+import { RemodlWebContainer } from './container';
 import { Process, ProcessEvent } from './process';
 
-let container: OpenWebContainer;
+let container: RemodlWebContainer;
 const processOutputs = new Map<number, string[]>();
 const MAX_OUTPUT_BUFFER = 1000; // Maximum lines to keep in buffer
 
@@ -14,7 +14,7 @@ self.onmessage = async function (e: MessageEvent<WorkerMessage>) {
         case 'initialize':
             let { payload } = e.data;
             // Initialize container when worker starts
-            container = new OpenWebContainer({ debug: payload.debug,
+            container = new RemodlWebContainer({ debug: payload.debug,
                 onServerListen:(port)=>{
                     sendWorkerResponse({ type: 'onServerListen', id, payload:{port} });
                 },

@@ -1,13 +1,13 @@
-# OpenWebContainer
+# RemodlWebContainer
 
-A browser-based virtual container runtime that enables server-like JavaScript execution environments directly in the browser. OpenWebContainer provides a sandboxed environment with a virtual file system, process management, and shell capabilities, making it possible to run server-side JavaScript applications entirely in the browser.
+A browser-based virtual container runtime that enables server-like JavaScript execution environments directly in the browser. RemodlWebContainer provides a sandboxed environment with a virtual file system, process management, and shell capabilities, making it possible to run server-side JavaScript applications entirely in the browser.
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ## 🗺️ Architecture Overview
 
-![OpenWebContainer Architecture](./images/architecture.png)
+![RemodlWebContainer Architecture](./images/architecture.png)
 
 The architecture consists of three main layers:
 1. **UI Layer**: React-based user interface with terminal and file explorer
@@ -141,8 +141,8 @@ The architecture consists of three main layers:
 
 ```bash
 # Clone the repository
-git clone https://github.com/thecodacus/OpenWebContainer.git
-cd OpenWebContainer
+git clone https://github.com/thecodacus/RemodlWebContainer.git
+cd RemodlWebContainer
 
 # Install dependencies
 pnpm install
@@ -157,11 +157,11 @@ pnpm playground   # Start only the playground
 ### Using the Core Package
 
 ```typescript
-import { OpenWebContainer } from '@open-web-container/core';
+import { RemodlWebContainer } from '@remodl-web-container/core';
 
 async function main() {
   // Create a new container
-  const container = new OpenWebContainer();
+  const container = new RemodlWebContainer();
 
   // Create a directory and write a JavaScript file
   container.writeFile('/app/hello.js', `

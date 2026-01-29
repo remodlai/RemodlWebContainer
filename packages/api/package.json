@@ -1,5 +1,5 @@
 {
-	"name": "@open-web-container/api",
+	"name": "@remodl-web-container/api",
 	"version": "0.1.0",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -9,7 +9,7 @@
 		"lint": "eslint src/**/*.ts"
 	},
 	"dependencies": {
-		"@open-web-container/core": "workspace:*"
+		"@remodl-web-container/core": "workspace:*"
 	},
 	"peerDependencies": {
 		"react": "^18.0.0"

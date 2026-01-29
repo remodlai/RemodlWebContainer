@@ -31,9 +31,9 @@ export interface SpawnOptions {
 }
 
 /**
- * Main OpenWebContainer class
+ * Main RemodlWebContainer class
  */
-export class OpenWebContainer {
+export class RemodlWebContainer {
     private fileSystem: IFileSystem;
     private processManager: ProcessManager;
     private processRegistry: ProcessRegistry;

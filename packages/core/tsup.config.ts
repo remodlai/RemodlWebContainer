@@ -13,7 +13,7 @@ if (isWorkerBuild) {
                 worker: 'src/worker-entry.ts'
             },
             format: ['iife'],
-            globalName: 'OpenWebContainer',
+            globalName: 'RemodlWebContainer',
             // minify: true,
             platform: 'browser',
             bundle: true,

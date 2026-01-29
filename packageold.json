@@ -15,11 +15,11 @@
 		"prepare": "husky install",
 		"typecheck": "turbo run typecheck",
 		"playground": "turbo run dev --filter=playground",
-		"core:build": "turbo run build --filter=@open-web-container/core",
-		"core:dev": "turbo run dev --filter=@open-web-container/core",
+		"core:build": "turbo run build --filter=@remodl-web-container/core",
+		"core:dev": "turbo run dev --filter=@remodl-web-container/core",
 		"changeset": "changeset",
 		"version-packages": "changeset version",
-		"release": "turbo run build --filter=@open-web-container/core && changeset publish"
+		"release": "turbo run build --filter=@remodl-web-container/core && changeset publish"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.27.1",

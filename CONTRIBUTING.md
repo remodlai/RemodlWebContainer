@@ -1,6 +1,6 @@
-# Contributing to OpenWebContainer
+# Contributing to RemodlWebContainer
 
-First off, thank you for considering contributing to OpenWebContainer! It's people like you that make OpenWebContainer such a great tool.
+First off, thank you for considering contributing to RemodlWebContainer! It's people like you that make RemodlWebContainer such a great tool.
 
 ## Table of Contents
 - [Code of Conduct](#code-of-conduct)
@@ -69,8 +69,8 @@ open-web-container/
 2. **Initial Setup**
    ```bash
    # Clone the repository
-   git clone https://github.com/thecodacus/OpenWebContainer.git
-   cd OpenWebContainer
+   git clone https://github.com/thecodacus/RemodlWebContainer.git
+   cd RemodlWebContainer
 
    # Install dependencies
    pnpm install
@@ -209,7 +209,7 @@ docs(readme): update installation instructions
 1. **Core Package**
    ```typescript
    // Enable debug logs
-   import { setDebugMode } from '@open-web-container/core';
+   import { setDebugMode } from '@remodl-web-container/core';
    setDebugMode(true);
    ```
 

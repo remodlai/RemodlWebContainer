@@ -14,7 +14,7 @@ interface PendingRequest {
     reject: (error: Error) => void;
     timeout: number;
 }
-import workerCode from '@open-web-container/core/worker-code';
+import workerCode from '@remodl-web-container/core/worker-code';
 
 export class WorkerBridge {
     private worker: Worker|undefined;
