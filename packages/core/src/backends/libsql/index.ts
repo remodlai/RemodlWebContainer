@@ -52,6 +52,10 @@ export {
   // Configuration
   type LibSQLBackendOptions,
   type FileSystemMetadata,
+  // Event types
+  type FSChangeEvent,
+  type FSChangeEventType,
+  type FSChangeCallback,
   // Constants
   S_IFMT,
   S_IFDIR,

@@ -16,6 +16,7 @@
 
 import type { Client, Transaction as LibSQLTx } from '@libsql/client';
 import type { LibSQLStore } from './store';
+import type { FSChangeEvent } from './types';
 
 /**
  * AsyncTransaction base class compatible with ZenFS
@@ -61,7 +62,8 @@ export class LibSQLTransaction extends AsyncTransactionBase {
     public readonly store: LibSQLStore,
     private readonly client: Client,
     private readonly organizationId: string,
-    private readonly agentId: string | null
+    private readonly agentId: string | null,
+    private readonly onCommit?: (events: FSChangeEvent[]) => void
   ) {
     super();
   }
@@ -237,6 +239,8 @@ export class LibSQLTransaction extends AsyncTransactionBase {
     await this.asyncDone;
 
     const now = new Date().toISOString();
+    const events: FSChangeEvent[] = [];
+    const timestamp = Date.now();
 
     // Process all pending writes
     for (const [id, data] of this.pendingWrites) {
@@ -250,6 +254,9 @@ export class LibSQLTransaction extends AsyncTransactionBase {
                 ctime = excluded.ctime`,
         args: [id, this.organizationId, this.agentId, data, data.length, now, now, now, now],
       });
+
+      // Collect event for this write
+      events.push({ eventType: 'change', inodeId: id, timestamp });
     }
 
     // Process all pending deletes
@@ -260,11 +267,19 @@ export class LibSQLTransaction extends AsyncTransactionBase {
               AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
         args: [id, this.organizationId, this.agentId, this.agentId],
       });
+
+      // Collect event for this delete ('rename' = deletion in Node.js convention)
+      events.push({ eventType: 'rename', inodeId: id, timestamp });
     }
 
     this.committed = true;
     this.pendingWrites.clear();
     this.pendingDeletes.clear();
+
+    // Emit events AFTER all SQL succeeds
+    if (events.length > 0 && this.onCommit) {
+      this.onCommit(events);
+    }
   }
 
   /**

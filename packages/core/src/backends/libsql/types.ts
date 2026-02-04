@@ -185,6 +185,27 @@ export function isSymlink(mode: number): boolean {
 }
 
 /**
+ * File system change event type
+ * - 'change': file content modified
+ * - 'rename': file created or deleted (Node.js fs.watch convention)
+ */
+export type FSChangeEventType = 'change' | 'rename';
+
+/**
+ * File system change event payload
+ */
+export interface FSChangeEvent {
+  eventType: FSChangeEventType;
+  inodeId: number;
+  timestamp: number;
+}
+
+/**
+ * Callback for file system change events
+ */
+export type FSChangeCallback = (event: FSChangeEvent) => void;
+
+/**
  * Get current ISO8601 timestamp
  */
 export function nowISO(): string {

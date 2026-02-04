@@ -13,7 +13,8 @@
 
 import type { Client } from '@libsql/client';
 import { LibSQLTransaction } from './transaction';
-import type { LibSQLBackendOptions } from './types';
+import { BrowserEventEmitter } from '../../process/base/event-emmiter';
+import type { LibSQLBackendOptions, FSChangeEvent, FSChangeCallback } from './types';
 
 /**
  * Usage information for the store
@@ -64,6 +65,7 @@ export class LibSQLStore implements Store {
   private readonly agentId: string | null;
   private readonly maxSize: number;
   private initialized = false;
+  private eventEmitter: BrowserEventEmitter = new BrowserEventEmitter();
 
   constructor(
     client: Client,
@@ -156,8 +158,27 @@ export class LibSQLStore implements Store {
       this,
       this.client,
       this.organizationId,
-      this.agentId
+      this.agentId,
+      (events) => this.handleCommitEvents(events)
     );
+  }
+
+  /**
+   * Handle events from committed transactions
+   */
+  private handleCommitEvents(events: FSChangeEvent[]): void {
+    for (const event of events) {
+      this.eventEmitter.emit('change', event);
+    }
+  }
+
+  /**
+   * Subscribe to file change events
+   * @returns Unsubscribe function
+   */
+  public onFileChange(callback: FSChangeCallback): () => void {
+    this.eventEmitter.on('change', callback);
+    return () => this.eventEmitter.off('change', callback);
   }
 
   /**

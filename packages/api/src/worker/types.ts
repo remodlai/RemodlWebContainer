@@ -67,6 +67,15 @@ export interface ServerClosePayload {
     port: number;
 }
 
+/**
+ * File change event payload for watch() notifications
+ */
+export interface FileChangePayload {
+    eventType: 'change' | 'rename';
+    inodeId: number;
+    timestamp: number;
+}
+
 
 export interface FileSystemPayload {
     writeFile: {
@@ -169,6 +178,8 @@ export type WorkerResponseMessage =
     | { type: 'serverList'; payload: GetServersResponsePayload }
     | { type: 'onServerListen'; payload: ServerListenPayload }
     | { type: 'onServerClose'; payload: ServerClosePayload }
+    // File change events (broadcast for watch())
+    | { type: 'fileChange'; payload: FileChangePayload }
 
 
 export type WorkerMessage = WorkerMessageBase & (WorkerRequestMessage | WorkerResponseMessage);

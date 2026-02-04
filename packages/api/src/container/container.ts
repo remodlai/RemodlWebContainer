@@ -27,6 +27,7 @@ export class ContainerManager {
     private _disposed: boolean = false;
     private onServerListen?: (port: number) => void;
     private onServerClose?: (port: number) => void;
+    private fileWatchers: Map<string, Set<FSWatchCallback>> = new Map();
 
     constructor(options: ContainerOptions = {}) {
         this.options = {
@@ -120,7 +121,32 @@ export class ContainerManager {
                     this.options.onServerClose(message.payload.port)
                 }
                 break;
+            case 'fileChange':
+                this.notifyWatchers(message.payload);
+                break;
         }
+    }
+
+    /**
+     * Notify registered watchers of file changes
+     * Note: Currently uses inodeId since path resolution is not implemented.
+     * Watchers watching '/' will receive all events.
+     */
+    private notifyWatchers(event: { eventType: string; inodeId: number; timestamp: number }): void {
+        // Notify root watchers (they get all events)
+        const rootCallbacks = this.fileWatchers.get('/');
+        if (rootCallbacks) {
+            rootCallbacks.forEach(cb => {
+                try {
+                    cb(event.eventType, `inode:${event.inodeId}`);
+                } catch (e) {
+                    if (this.options.debug) console.error('Watcher callback error:', e);
+                }
+            });
+        }
+
+        // TODO: Path-based matching requires inode→path resolution
+        // For now, only root watchers work
     }
 
     /**
@@ -316,7 +342,9 @@ export class ContainerManager {
 
     /**
      * Watch for file changes
-     * Note: Requires libSQL backend to emit change events (see Task #13)
+     * Registers a callback to be notified when files change.
+     * Currently only root watchers ('/') receive all events since
+     * inode→path resolution is not yet implemented.
      */
     watch(
         filename: string,
@@ -327,22 +355,39 @@ export class ContainerManager {
         const actualListener = typeof options === 'function' ? options : listener;
         const actualOptions = typeof options === 'object' ? options : {};
 
-        // Create a simple watcher that polls or uses events
-        // For now, return a stub that can be enhanced when libSQL emits events
-        let closed = false;
+        if (!actualListener) {
+            throw new Error('watch() requires a callback');
+        }
 
+        // Register watcher
+        if (!this.fileWatchers.has(filename)) {
+            this.fileWatchers.set(filename, new Set());
+        }
+        this.fileWatchers.get(filename)!.add(actualListener);
+
+        if (this.options.debug) {
+            console.log(`watch() registered for: ${filename}`);
+        }
+
+        let closed = false;
         const watcher: IFSWatcher = {
             close: () => {
+                if (closed) return;
                 closed = true;
+
+                const callbacks = this.fileWatchers.get(filename);
+                if (callbacks) {
+                    callbacks.delete(actualListener);
+                    if (callbacks.size === 0) {
+                        this.fileWatchers.delete(filename);
+                    }
+                }
+
+                if (this.options.debug) {
+                    console.log(`watch() closed for: ${filename}`);
+                }
             }
         };
-
-        // TODO: Implement actual watching via worker message
-        // This requires Task #13 (libSQL change events) to work properly
-        // For now, log a warning
-        if (this.options.debug) {
-            console.warn('watch() is a stub - requires libSQL change event emission');
-        }
 
         return watcher;
     }
