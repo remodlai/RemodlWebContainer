@@ -29,6 +29,14 @@
 			"import": "./dist/index.js",
 			"require": "./dist/index.js"
 		},
+		"./backends/libsql": {
+			"import": "./dist/backends/libsql/index.js",
+			"require": "./dist/backends/libsql/index.js"
+		},
+		"./backends": {
+			"import": "./dist/backends/index.js",
+			"require": "./dist/backends/index.js"
+		},
 		"./worker-code": {
 			"import": "./dist/worker-code.js",
 			"require": "./dist/worker-code.cjs"
@@ -38,6 +46,7 @@
 	"author": "",
 	"license": "ISC",
 	"dependencies": {
+		"@libsql/client": "^0.17.0",
 		"@electric-sql/pglite": "^0.3.15",
 		"@jitl/quickjs-ng-wasmfile-debug-asyncify": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-asyncify-0.31.0.tgz",
 		"@jitl/quickjs-ng-wasmfile-debug-sync": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-sync-0.31.0.tgz",
