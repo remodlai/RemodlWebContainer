@@ -69,10 +69,11 @@ export interface ServerClosePayload {
 
 /**
  * File change event payload for watch() notifications
+ * Uses path (not inode ID) so watchers can match events by path
  */
 export interface FileChangePayload {
     eventType: 'change' | 'rename';
-    inodeId: number;
+    path: string;                    // Full path: '/src/main.ts'
     timestamp: number;
 }
 

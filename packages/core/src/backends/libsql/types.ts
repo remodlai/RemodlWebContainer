@@ -2,44 +2,35 @@
 /**
  * TypeScript interfaces for libSQL-backed ZenFS filesystem
  *
- * These types map to the 4 database tables:
- * - fs_inodes: File/directory content and metadata
- * - fs_dirents: Directory entries (name → inode mapping)
+ * These types map to the 3 database tables:
+ * - files: File/directory content and metadata (path-based)
  * - fs_metadata: FileSystem-level metadata
  * - agent_memory: Vector search table for agent workspace
+ *
+ * Why path-based instead of inode-based?
+ * - libSQL already provides inode-level efficiency (no BLOB copy on UPDATE)
+ * - watch() needs paths, not inode IDs
+ * - Simpler schema, simpler code
  */
 
 /**
- * Row structure for fs_inodes table
- * Stores file content (data) and POSIX metadata
+ * Row structure for files table
+ * Stores file content and POSIX metadata with path as primary key
  */
-export interface InodeRow {
-  inode_id: number;
+export interface FileRow {
+  path: string;                   // Full path: '/src/main.ts'
   organization_id: string;
   agent_id: string | null;
-  data: Uint8Array | null;       // File content or directory listing JSON
+  content: Uint8Array | null;     // File content (NULL for directories)
   mode: number;                   // Permissions + type (16877=dir, 33188=file)
   uid: number;
   gid: number;
   size: number;
-  nlink: number;                  // Hard link count
   atime: string;                  // ISO8601 timestamp
   mtime: string;
   ctime: string;
   birthtime: string;
-  flags: number;                  // InodeFlags bitmask
-}
-
-/**
- * Row structure for fs_dirents table
- * Maps directory entry names to inode IDs
- */
-export interface DirentRow {
-  parent_inode: number;
-  name: string;
-  inode_id: number;
-  organization_id: string;
-  agent_id: string | null;
+  canonical_path: string | null;  // For hard links: points to canonical path
 }
 
 /**
@@ -193,10 +184,11 @@ export type FSChangeEventType = 'change' | 'rename';
 
 /**
  * File system change event payload
+ * Uses path (not inode ID) so watch() can match events to watchers
  */
 export interface FSChangeEvent {
   eventType: FSChangeEventType;
-  inodeId: number;
+  path: string;                   // Full path: '/src/main.ts'
   timestamp: number;
 }
 
@@ -213,30 +205,29 @@ export function nowISO(): string {
 }
 
 /**
- * Create a default inode with sensible defaults
+ * Create a default file row with sensible defaults
  */
-export function createDefaultInode(
-  inodeId: number,
+export function createDefaultFile(
+  path: string,
   organizationId: string,
   agentId: string | null,
   mode: number = DEFAULT_FILE_MODE,
-  data: Uint8Array | null = null
-): InodeRow {
+  content: Uint8Array | null = null
+): FileRow {
   const now = nowISO();
   return {
-    inode_id: inodeId,
+    path,
     organization_id: organizationId,
     agent_id: agentId,
-    data,
+    content,
     mode,
     uid: 1000,
     gid: 1000,
-    size: data?.byteLength ?? 0,
-    nlink: 1,
+    size: content?.byteLength ?? 0,
     atime: now,
     mtime: now,
     ctime: now,
     birthtime: now,
-    flags: 0,
+    canonical_path: null,
   };
 }

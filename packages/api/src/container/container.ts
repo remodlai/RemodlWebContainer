@@ -129,24 +129,37 @@ export class ContainerManager {
 
     /**
      * Notify registered watchers of file changes
-     * Note: Currently uses inodeId since path resolution is not implemented.
-     * Watchers watching '/' will receive all events.
+     * Events now include the full path, enabling proper path matching
      */
-    private notifyWatchers(event: { eventType: string; inodeId: number; timestamp: number }): void {
-        // Notify root watchers (they get all events)
-        const rootCallbacks = this.fileWatchers.get('/');
-        if (rootCallbacks) {
-            rootCallbacks.forEach(cb => {
-                try {
-                    cb(event.eventType, `inode:${event.inodeId}`);
-                } catch (e) {
-                    if (this.options.debug) console.error('Watcher callback error:', e);
-                }
-            });
-        }
+    private notifyWatchers(event: { eventType: string; path: string; timestamp: number }): void {
+        const changedPath = event.path;
+        const filename = changedPath.split('/').pop() || changedPath;
 
-        // TODO: Path-based matching requires inode→path resolution
-        // For now, only root watchers work
+        // Check each watcher to see if it matches the changed path
+        this.fileWatchers.forEach((callbacks, watchedPath) => {
+            let shouldNotify = false;
+
+            if (watchedPath === '/') {
+                // Root watcher receives all events
+                shouldNotify = true;
+            } else if (watchedPath === changedPath) {
+                // Exact path match
+                shouldNotify = true;
+            } else if (changedPath.startsWith(watchedPath + '/')) {
+                // Changed path is inside watched directory
+                shouldNotify = true;
+            }
+
+            if (shouldNotify) {
+                callbacks.forEach(cb => {
+                    try {
+                        cb(event.eventType, filename);
+                    } catch (e) {
+                        if (this.options.debug) console.error('Watcher callback error:', e);
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -343,8 +356,10 @@ export class ContainerManager {
     /**
      * Watch for file changes
      * Registers a callback to be notified when files change.
-     * Currently only root watchers ('/') receive all events since
-     * inode→path resolution is not yet implemented.
+     * Supports path matching:
+     * - '/' watches all files
+     * - '/src' watches all files in /src/ directory
+     * - '/src/main.ts' watches a specific file
      */
     watch(
         filename: string,

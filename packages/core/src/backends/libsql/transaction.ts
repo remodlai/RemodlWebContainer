@@ -2,25 +2,23 @@
 /**
  * LibSQLTransaction - Atomic operations for libSQL-backed ZenFS filesystem
  *
- * This extends ZenFS's AsyncTransaction to use libSQL for storage.
- * The Store uses a key-value interface where:
- * - Keys are inode IDs (numbers)
- * - Values are Uint8Array data (serialized Inode or file content)
+ * This provides path-based storage where:
+ * - Keys are file paths (strings like '/src/main.ts')
+ * - Values are Uint8Array data (file content)
  *
- * ZenFS uses TWO ids per inode:
- * - inode.ino: stores the Inode metadata (serialized Inode struct)
- * - inode.data: stores the file content (or directory listing JSON)
- *
- * These are allocated sequentially: if ino=2, then data=3
+ * Why path-based instead of inode-based?
+ * - libSQL already provides inode-level efficiency (no BLOB copy on UPDATE)
+ * - watch() needs paths, not inode IDs
+ * - Simpler schema, simpler code
  */
 
-import type { Client, Transaction as LibSQLTx } from '@libsql/client';
+import type { Client } from '@libsql/client';
 import type { LibSQLStore } from './store';
 import type { FSChangeEvent } from './types';
 
 /**
  * AsyncTransaction base class compatible with ZenFS
- * We implement this ourselves since we're not importing from @zenfs/core
+ * Path-based interface for filesystem operations
  */
 export abstract class AsyncTransactionBase {
   protected asyncDone: Promise<unknown> = Promise.resolve();
@@ -32,30 +30,28 @@ export abstract class AsyncTransactionBase {
     this.asyncDone = this.asyncDone.then(() => promise);
   }
 
-  public abstract keys(): Promise<Iterable<number>>;
-  public abstract get(id: number, offset: number, end?: number): Promise<Uint8Array | undefined>;
-  public abstract getSync(id: number, offset: number, end?: number): Uint8Array | undefined;
-  public abstract set(id: number, data: Uint8Array, offset: number): Promise<void>;
-  public abstract setSync(id: number, data: Uint8Array, offset: number): void;
-  public abstract remove(id: number): Promise<void>;
-  public abstract removeSync(id: number): void;
+  public abstract keys(): Promise<Iterable<string>>;
+  public abstract get(path: string, offset: number, end?: number): Promise<Uint8Array | undefined>;
+  public abstract getSync(path: string, offset: number, end?: number): Uint8Array | undefined;
+  public abstract set(path: string, data: Uint8Array, offset: number): Promise<void>;
+  public abstract setSync(path: string, data: Uint8Array, offset: number): void;
+  public abstract remove(path: string): Promise<void>;
+  public abstract removeSync(path: string): void;
 }
 
 /**
  * LibSQLTransaction provides atomic operations using libSQL
  *
- * Key insight: ZenFS Store interface is a simple key-value store where:
- * - keys are numbers (inode IDs or data IDs)
- * - values are Uint8Array (raw bytes)
+ * Path-based storage where:
+ * - keys are strings (file paths like '/src/main.ts')
+ * - values are Uint8Array (file content)
  *
- * We store these in fs_inodes table using inode_id as the key.
- * For simplicity, we use the 'data' column for all storage,
- * treating inode metadata and file content identically as blobs.
+ * We store these in the 'files' table using path as the primary key.
  */
 export class LibSQLTransaction extends AsyncTransactionBase {
-  private cache: Map<number, Uint8Array | undefined> = new Map();
-  private pendingWrites: Map<number, Uint8Array> = new Map();
-  private pendingDeletes: Set<number> = new Set();
+  private cache: Map<string, Uint8Array | undefined> = new Map();
+  private pendingWrites: Map<string, Uint8Array> = new Map();
+  private pendingDeletes: Set<string> = new Set();
   private committed = false;
 
   constructor(
@@ -69,61 +65,61 @@ export class LibSQLTransaction extends AsyncTransactionBase {
   }
 
   /**
-   * Get all keys (inode IDs) in the store
+   * Get all keys (file paths) in the store
    */
-  public async keys(): Promise<Iterable<number>> {
+  public async keys(): Promise<Iterable<string>> {
     await this.asyncDone;
 
     const result = await this.client.execute({
-      sql: `SELECT DISTINCT inode_id FROM fs_inodes
+      sql: `SELECT path FROM files
             WHERE organization_id = ? AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
       args: [this.organizationId, this.agentId, this.agentId],
     });
 
-    return result.rows.map((row) => row.inode_id as number);
+    return result.rows.map((row) => row.path as string);
   }
 
   /**
-   * Get data for an inode ID
+   * Get data for a file path
    *
-   * @param id - The inode ID (or data ID) to look up
+   * @param path - The file path to look up (e.g., '/src/main.ts')
    * @param offset - Start offset in the data
    * @param end - End offset (exclusive), or undefined for rest of data
    */
-  public async get(id: number, offset: number, end?: number): Promise<Uint8Array | undefined> {
+  public async get(path: string, offset: number, end?: number): Promise<Uint8Array | undefined> {
     await this.asyncDone;
 
     // Check pending deletes
-    if (this.pendingDeletes.has(id)) {
+    if (this.pendingDeletes.has(path)) {
       return undefined;
     }
 
     // Check pending writes
-    if (this.pendingWrites.has(id)) {
-      const data = this.pendingWrites.get(id)!;
+    if (this.pendingWrites.has(path)) {
+      const data = this.pendingWrites.get(path)!;
       return this.sliceData(data, offset, end);
     }
 
     // Check cache
-    if (this.cache.has(id)) {
-      const cached = this.cache.get(id);
+    if (this.cache.has(path)) {
+      const cached = this.cache.get(path);
       return cached ? this.sliceData(cached, offset, end) : undefined;
     }
 
     // Query database
     const result = await this.client.execute({
-      sql: `SELECT data FROM fs_inodes
-            WHERE inode_id = ? AND organization_id = ?
+      sql: `SELECT content FROM files
+            WHERE path = ? AND organization_id = ?
             AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-      args: [id, this.organizationId, this.agentId, this.agentId],
+      args: [path, this.organizationId, this.agentId, this.agentId],
     });
 
     if (result.rows.length === 0) {
-      this.cache.set(id, undefined);
+      this.cache.set(path, undefined);
       return undefined;
     }
 
-    const rawData = result.rows[0].data;
+    const rawData = result.rows[0].content;
     let data: Uint8Array | undefined;
 
     if (rawData === null || rawData === undefined) {
@@ -144,7 +140,7 @@ export class LibSQLTransaction extends AsyncTransactionBase {
       data = undefined;
     }
 
-    this.cache.set(id, data);
+    this.cache.set(path, data);
     return data ? this.sliceData(data, offset, end) : undefined;
   }
 
@@ -152,43 +148,43 @@ export class LibSQLTransaction extends AsyncTransactionBase {
    * Synchronous get - uses cache only
    * Throws EAGAIN if data not in cache
    */
-  public getSync(id: number, offset: number, end?: number): Uint8Array | undefined {
+  public getSync(path: string, offset: number, end?: number): Uint8Array | undefined {
     // Check pending deletes
-    if (this.pendingDeletes.has(id)) {
+    if (this.pendingDeletes.has(path)) {
       return undefined;
     }
 
     // Check pending writes first
-    if (this.pendingWrites.has(id)) {
-      const data = this.pendingWrites.get(id)!;
+    if (this.pendingWrites.has(path)) {
+      const data = this.pendingWrites.get(path)!;
       return this.sliceData(data, offset, end);
     }
 
     // Check cache
-    if (this.cache.has(id)) {
-      const cached = this.cache.get(id);
+    if (this.cache.has(path)) {
+      const cached = this.cache.get(path);
       return cached ? this.sliceData(cached, offset, end) : undefined;
     }
 
     // Not in cache - trigger async load and throw EAGAIN
-    this.async(this.get(id, offset, end));
+    this.async(this.get(path, offset, end));
     const error = new Error('EAGAIN: Resource temporarily unavailable');
     (error as any).code = 'EAGAIN';
     throw error;
   }
 
   /**
-   * Set data for an inode ID
+   * Set data for a file path
    *
-   * @param id - The inode ID (or data ID)
+   * @param path - The file path (e.g., '/src/main.ts')
    * @param data - The data to store
    * @param offset - Offset at which to write (0 for full replacement)
    */
-  public async set(id: number, data: Uint8Array, offset: number): Promise<void> {
+  public async set(path: string, data: Uint8Array, offset: number): Promise<void> {
     await this.asyncDone;
 
     // Remove from deletes if present
-    this.pendingDeletes.delete(id);
+    this.pendingDeletes.delete(path);
 
     // Handle partial writes
     let finalData: Uint8Array;
@@ -196,39 +192,39 @@ export class LibSQLTransaction extends AsyncTransactionBase {
       finalData = data;
     } else {
       // Need to merge with existing data
-      const existing = await this.get(id, 0) ?? new Uint8Array(0);
+      const existing = await this.get(path, 0) ?? new Uint8Array(0);
       const newSize = Math.max(existing.length, offset + data.length);
       finalData = new Uint8Array(newSize);
       finalData.set(existing);
       finalData.set(data, offset);
     }
 
-    this.pendingWrites.set(id, finalData);
-    this.cache.set(id, finalData);
+    this.pendingWrites.set(path, finalData);
+    this.cache.set(path, finalData);
   }
 
   /**
    * Synchronous set - queues for async write
    */
-  public setSync(id: number, data: Uint8Array, offset: number): void {
-    this.async(this.set(id, data, offset));
+  public setSync(path: string, data: Uint8Array, offset: number): void {
+    this.async(this.set(path, data, offset));
   }
 
   /**
-   * Remove an inode ID from the store
+   * Remove a file path from the store
    */
-  public async remove(id: number): Promise<void> {
+  public async remove(path: string): Promise<void> {
     await this.asyncDone;
-    this.pendingWrites.delete(id);
-    this.pendingDeletes.add(id);
-    this.cache.set(id, undefined);
+    this.pendingWrites.delete(path);
+    this.pendingDeletes.add(path);
+    this.cache.set(path, undefined);
   }
 
   /**
    * Synchronous remove - queues for async delete
    */
-  public removeSync(id: number): void {
-    this.async(this.remove(id));
+  public removeSync(path: string): void {
+    this.async(this.remove(path));
   }
 
   /**
@@ -243,33 +239,33 @@ export class LibSQLTransaction extends AsyncTransactionBase {
     const timestamp = Date.now();
 
     // Process all pending writes
-    for (const [id, data] of this.pendingWrites) {
+    for (const [path, data] of this.pendingWrites) {
       await this.client.execute({
-        sql: `INSERT INTO fs_inodes (inode_id, organization_id, agent_id, data, mode, uid, gid, size, nlink, atime, mtime, ctime, birthtime, flags)
-              VALUES (?, ?, ?, ?, 33188, 1000, 1000, ?, 1, ?, ?, ?, ?, 0)
-              ON CONFLICT (inode_id, organization_id, agent_id) DO UPDATE SET
-                data = excluded.data,
+        sql: `INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
+              VALUES (?, ?, ?, ?, 33188, 1000, 1000, ?, ?, ?, ?, ?)
+              ON CONFLICT (path, organization_id, agent_id) DO UPDATE SET
+                content = excluded.content,
                 size = excluded.size,
                 mtime = excluded.mtime,
                 ctime = excluded.ctime`,
-        args: [id, this.organizationId, this.agentId, data, data.length, now, now, now, now],
+        args: [path, this.organizationId, this.agentId, data, data.length, now, now, now, now],
       });
 
-      // Collect event for this write
-      events.push({ eventType: 'change', inodeId: id, timestamp });
+      // Collect event for this write (path-based!)
+      events.push({ eventType: 'change', path, timestamp });
     }
 
     // Process all pending deletes
-    for (const id of this.pendingDeletes) {
+    for (const path of this.pendingDeletes) {
       await this.client.execute({
-        sql: `DELETE FROM fs_inodes
-              WHERE inode_id = ? AND organization_id = ?
+        sql: `DELETE FROM files
+              WHERE path = ? AND organization_id = ?
               AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-        args: [id, this.organizationId, this.agentId, this.agentId],
+        args: [path, this.organizationId, this.agentId, this.agentId],
       });
 
       // Collect event for this delete ('rename' = deletion in Node.js convention)
-      events.push({ eventType: 'rename', inodeId: id, timestamp });
+      events.push({ eventType: 'rename', path, timestamp });
     }
 
     this.committed = true;

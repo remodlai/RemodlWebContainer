@@ -45,8 +45,7 @@ export { LibSQLTransaction, AsyncTransactionBase } from './transaction';
 // Type definitions
 export {
   // Row interfaces
-  type InodeRow,
-  type DirentRow,
+  type FileRow,
   type MetadataRow,
   type AgentMemoryRow,
   // Configuration
@@ -69,7 +68,7 @@ export {
   isFile,
   isSymlink,
   nowISO,
-  createDefaultInode,
+  createDefaultFile,
 } from './types';
 
 // Default export is the backend

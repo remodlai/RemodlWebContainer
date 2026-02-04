@@ -1,59 +1,49 @@
 -- libSQL Schema for ZenFS Filesystem Backend
 --
 -- This schema supports both Project FS and Agent Workspace FS
--- using inode-based storage with directory entries
+-- using path-based storage (simpler than inode-based)
 --
 -- Tables:
---   fs_inodes  - Inode data (file content + metadata)
---   fs_dirents - Directory entries (name → inode mapping)
---   fs_metadata - FileSystem-level metadata (access_scope, templates)
+--   files        - File/directory content and metadata (path as key)
+--   fs_metadata  - FileSystem-level metadata (access_scope, templates)
 --   agent_memory - Vector search table (Agent Workspace only)
+--
+-- Why path-based instead of inode-based?
+--   - libSQL already provides inode-level efficiency (no BLOB copy on UPDATE)
+--   - watch() needs paths, not inode IDs
+--   - Simpler schema, simpler code
+--   - Hard links can be supported via canonical_path column if needed
 
 -- ============================================================
--- TABLE: fs_inodes
+-- TABLE: files
 -- Stores file/directory content and POSIX metadata
+-- Path is the primary key for direct lookups
 -- ============================================================
-CREATE TABLE IF NOT EXISTS fs_inodes (
-  inode_id INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS files (
+  path TEXT NOT NULL,                     -- Full path: '/src/main.ts'
   organization_id TEXT NOT NULL,
   agent_id TEXT,                          -- NULL for project FS
-  data BLOB,                              -- File content or directory listing JSON
+  content BLOB,                           -- File content (NULL for directories)
   mode INTEGER NOT NULL DEFAULT 33188,    -- Permissions + type (16877=dir, 33188=file)
   uid INTEGER NOT NULL DEFAULT 1000,
   gid INTEGER NOT NULL DEFAULT 1000,
   size INTEGER NOT NULL DEFAULT 0,
-  nlink INTEGER NOT NULL DEFAULT 1,       -- Hard link count
   atime TEXT NOT NULL,                    -- ISO8601 timestamp
   mtime TEXT NOT NULL,
   ctime TEXT NOT NULL,
   birthtime TEXT NOT NULL,
-  flags INTEGER NOT NULL DEFAULT 0,       -- InodeFlags bitmask
-  PRIMARY KEY (inode_id, organization_id, agent_id)
+  canonical_path TEXT,                    -- For hard links: points to canonical path, or NULL
+  PRIMARY KEY (path, organization_id, agent_id)
 );
 
--- Index for fast org/agent lookups
-CREATE INDEX IF NOT EXISTS idx_fs_inodes_org_agent
-ON fs_inodes(organization_id, agent_id);
+-- Index for fast org/agent lookups (list all files for an org/agent)
+CREATE INDEX IF NOT EXISTS idx_files_org_agent
+ON files(organization_id, agent_id);
 
--- ============================================================
--- TABLE: fs_dirents
--- Maps directory entry names to inode IDs
--- ============================================================
-CREATE TABLE IF NOT EXISTS fs_dirents (
-  parent_inode INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  inode_id INTEGER NOT NULL,
-  organization_id TEXT NOT NULL,
-  agent_id TEXT,                          -- NULL for project FS
-  PRIMARY KEY (parent_inode, name, organization_id, agent_id),
-  FOREIGN KEY (inode_id, organization_id, agent_id)
-    REFERENCES fs_inodes(inode_id, organization_id, agent_id)
-    ON DELETE CASCADE
-);
-
--- Index for child lookups
-CREATE INDEX IF NOT EXISTS idx_fs_dirents_inode
-ON fs_dirents(inode_id, organization_id, agent_id);
+-- Index for directory listing (find all files in a directory)
+-- Uses path prefix matching: WHERE path LIKE '/src/%' AND path NOT LIKE '/src/%/%'
+CREATE INDEX IF NOT EXISTS idx_files_path_prefix
+ON files(path, organization_id, agent_id);
 
 -- ============================================================
 -- TABLE: fs_metadata
@@ -115,11 +105,8 @@ CREATE TRIGGER IF NOT EXISTS agent_memory_fts_update AFTER UPDATE ON agent_memor
 END;
 
 -- ============================================================
--- INITIAL DATA: Root directory (inode 0)
+-- INITIAL DATA: Root directory
 -- Must be inserted when creating a new filesystem
 -- ============================================================
--- INSERT INTO fs_inodes (inode_id, organization_id, agent_id, data, mode, uid, gid, size, nlink, atime, mtime, ctime, birthtime, flags)
--- VALUES (0, :org_id, :agent_id, '{}', 16877, 1000, 1000, 0, 2, datetime('now'), datetime('now'), datetime('now'), datetime('now'), 0);
---
--- INSERT INTO fs_inodes (inode_id, organization_id, agent_id, data, mode, uid, gid, size, nlink, atime, mtime, ctime, birthtime, flags)
--- VALUES (1, :org_id, :agent_id, '{}', 16877, 1000, 1000, 0, 2, datetime('now'), datetime('now'), datetime('now'), datetime('now'), 0);
+-- INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
+-- VALUES ('/', :org_id, :agent_id, NULL, 16877, 1000, 1000, 0, datetime('now'), datetime('now'), datetime('now'), datetime('now'));

@@ -6,9 +6,9 @@
  * It supports both local embedded replicas (SQLite WASM) and remote sync to libsql-server.
  *
  * Key concepts:
- * - Store is a key-value interface (id → Uint8Array)
- * - ZenFS StoreFS uses two IDs per inode: ino (metadata) and data (content)
+ * - Store is a path-based interface (path → Uint8Array)
  * - All operations go through transactions for atomicity
+ * - watch() events use paths (not inode IDs) for easy matching
  */
 
 import type { Client } from '@libsql/client';
@@ -84,41 +84,34 @@ export class LibSQLStore implements Store {
   public async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Create tables if they don't exist
+    // Create files table (path-based storage)
     await this.client.execute(`
-      CREATE TABLE IF NOT EXISTS fs_inodes (
-        inode_id INTEGER NOT NULL,
+      CREATE TABLE IF NOT EXISTS files (
+        path TEXT NOT NULL,
         organization_id TEXT NOT NULL,
         agent_id TEXT,
-        data BLOB,
+        content BLOB,
         mode INTEGER NOT NULL DEFAULT 33188,
         uid INTEGER NOT NULL DEFAULT 1000,
         gid INTEGER NOT NULL DEFAULT 1000,
         size INTEGER NOT NULL DEFAULT 0,
-        nlink INTEGER NOT NULL DEFAULT 1,
         atime TEXT NOT NULL,
         mtime TEXT NOT NULL,
         ctime TEXT NOT NULL,
         birthtime TEXT NOT NULL,
-        flags INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (inode_id, organization_id, agent_id)
+        canonical_path TEXT,
+        PRIMARY KEY (path, organization_id, agent_id)
       )
     `);
 
     await this.client.execute(`
-      CREATE INDEX IF NOT EXISTS idx_fs_inodes_org_agent
-      ON fs_inodes(organization_id, agent_id)
+      CREATE INDEX IF NOT EXISTS idx_files_org_agent
+      ON files(organization_id, agent_id)
     `);
 
     await this.client.execute(`
-      CREATE TABLE IF NOT EXISTS fs_dirents (
-        parent_inode INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        inode_id INTEGER NOT NULL,
-        organization_id TEXT NOT NULL,
-        agent_id TEXT,
-        PRIMARY KEY (parent_inode, name, organization_id, agent_id)
-      )
+      CREATE INDEX IF NOT EXISTS idx_files_path_prefix
+      ON files(path, organization_id, agent_id)
     `);
 
     await this.client.execute(`
@@ -214,12 +207,12 @@ export class LibSQLStore implements Store {
   }
 
   /**
-   * Check if a root inode exists
+   * Check if a root directory exists
    */
   public async hasRoot(): Promise<boolean> {
     const result = await this.client.execute({
-      sql: `SELECT 1 FROM fs_inodes
-            WHERE inode_id = 0 AND organization_id = ?
+      sql: `SELECT 1 FROM files
+            WHERE path = '/' AND organization_id = ?
             AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
       args: [this.organizationId, this.agentId, this.agentId],
     });
@@ -236,20 +229,12 @@ export class LibSQLStore implements Store {
 
     const now = new Date().toISOString();
 
-    // Create root inode (ino=0)
+    // Create root directory entry
     // Mode 16877 = S_IFDIR | 0755 (directory with rwxr-xr-x)
     await this.client.execute({
-      sql: `INSERT INTO fs_inodes (inode_id, organization_id, agent_id, data, mode, uid, gid, size, nlink, atime, mtime, ctime, birthtime, flags)
-            VALUES (0, ?, ?, ?, 16877, 1000, 1000, 0, 2, ?, ?, ?, ?, 0)`,
-      args: [this.organizationId, this.agentId, new TextEncoder().encode('{}'), now, now, now, now],
-    });
-
-    // Create data node for root directory (id=1)
-    // This stores the directory listing as JSON
-    await this.client.execute({
-      sql: `INSERT INTO fs_inodes (inode_id, organization_id, agent_id, data, mode, uid, gid, size, nlink, atime, mtime, ctime, birthtime, flags)
-            VALUES (1, ?, ?, ?, 16877, 1000, 1000, 2, 1, ?, ?, ?, ?, 0)`,
-      args: [this.organizationId, this.agentId, new TextEncoder().encode('{}'), now, now, now, now],
+      sql: `INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
+            VALUES ('/', ?, ?, NULL, 16877, 1000, 1000, 0, ?, ?, ?, ?)`,
+      args: [this.organizationId, this.agentId, now, now, now, now],
     });
   }
 
