@@ -19,6 +19,15 @@ export class VirtualProcess extends BrowserEventEmitter {
     private _output?: ReadableStream<string>;
     private _outputController?: ReadableStreamDefaultController<string>;
 
+    // Separate stdout/stderr streams for API compatibility
+    private _stdout?: ReadableStream<string>;
+    private _stdoutController?: ReadableStreamDefaultController<string>;
+    private _stderr?: ReadableStream<string>;
+    private _stderrController?: ReadableStreamDefaultController<string>;
+
+    // Per-process working directory
+    private _cwd: string;
+
     // Exit promise for awaiting process completion
     private _exitPromise: Promise<number>;
     private _exitResolve!: (exitCode: number) => void;
@@ -27,13 +36,15 @@ export class VirtualProcess extends BrowserEventEmitter {
         pid: number,
         command: string,
         args: string[],
-        worker: WorkerBridge
+        worker: WorkerBridge,
+        cwd: string = '/project-fs'
     ) {
         super();
         this.pid = pid;
         this.command = command;
         this.args = args;
         this.worker = worker;
+        this._cwd = cwd;
         this._startTime = new Date();
 
         // Set max listeners to avoid memory leaks
@@ -46,6 +57,9 @@ export class VirtualProcess extends BrowserEventEmitter {
 
         // Set up output stream bridging from events
         this._setupOutputStream();
+
+        // Set up separate stdout/stderr streams
+        this._setupStdoutStderr();
     }
 
     /**
@@ -91,6 +105,89 @@ export class VirtualProcess extends BrowserEventEmitter {
     }
 
     /**
+     * Set up separate stdout and stderr streams
+     */
+    private _setupStdoutStderr(): void {
+        // stdout stream - only receives non-error output
+        this._stdout = new ReadableStream<string>({
+            start: (controller) => {
+                this._stdoutController = controller;
+
+                // Bridge OUTPUT events where isError is false
+                this.on(ProcessEvent.OUTPUT, ({ output, isError }) => {
+                    if (!isError) {
+                        try {
+                            controller.enqueue(output);
+                        } catch {
+                            // Stream may be closed
+                        }
+                    }
+                });
+
+                // Close stream on process exit
+                this.on(ProcessEvent.EXIT, () => {
+                    try {
+                        controller.close();
+                    } catch {
+                        // Stream may already be closed
+                    }
+                });
+
+                // Error the stream on process error
+                this.on(ProcessEvent.ERROR, ({ error }) => {
+                    try {
+                        controller.error(error);
+                    } catch {
+                        // Stream may already be closed
+                    }
+                });
+            },
+            cancel: () => {
+                // Don't kill process on stdout cancel - stderr might still be active
+            }
+        });
+
+        // stderr stream - only receives error output
+        this._stderr = new ReadableStream<string>({
+            start: (controller) => {
+                this._stderrController = controller;
+
+                // Bridge OUTPUT events where isError is true
+                this.on(ProcessEvent.OUTPUT, ({ output, isError }) => {
+                    if (isError) {
+                        try {
+                            controller.enqueue(output);
+                        } catch {
+                            // Stream may be closed
+                        }
+                    }
+                });
+
+                // Close stream on process exit
+                this.on(ProcessEvent.EXIT, () => {
+                    try {
+                        controller.close();
+                    } catch {
+                        // Stream may already be closed
+                    }
+                });
+
+                // Error the stream on process error
+                this.on(ProcessEvent.ERROR, ({ error }) => {
+                    try {
+                        controller.error(error);
+                    } catch {
+                        // Stream may already be closed
+                    }
+                });
+            },
+            cancel: () => {
+                // Don't kill process on stderr cancel - stdout might still be active
+            }
+        });
+    }
+
+    /**
      * Input stream for writing to the process stdin
      * Usage: process.input.getWriter().write('data')
      */
@@ -117,6 +214,22 @@ export class VirtualProcess extends BrowserEventEmitter {
      */
     get output(): ReadableStream<string> {
         return this._output!;
+    }
+
+    /**
+     * Stdout stream for reading only stdout (non-error) output
+     * Usage: process.stdout.pipeTo(writable) or process.stdout.getReader()
+     */
+    get stdout(): ReadableStream<string> {
+        return this._stdout!;
+    }
+
+    /**
+     * Stderr stream for reading only stderr (error) output
+     * Usage: process.stderr.pipeTo(writable) or process.stderr.getReader()
+     */
+    get stderr(): ReadableStream<string> {
+        return this._stderr!;
     }
 
     /**
@@ -267,5 +380,32 @@ export class VirtualProcess extends BrowserEventEmitter {
         return this._endTime ?
             this._endTime.getTime() - this._startTime.getTime() :
             Date.now() - this._startTime.getTime();
+    }
+
+    /**
+     * Get the current working directory for this process
+     */
+    get cwd(): string {
+        return this._cwd;
+    }
+
+    /**
+     * Change the working directory for this process
+     * @param path - Absolute or relative path to change to
+     */
+    async chdir(path: string): Promise<void> {
+        // Resolve relative paths against current cwd
+        let newPath: string;
+        if (path.startsWith('/')) {
+            newPath = path;
+        } else {
+            newPath = `${this._cwd}/${path}`.replace(/\/+/g, '/');
+        }
+
+        // Normalize path (remove trailing slashes except for root)
+        newPath = newPath.replace(/\/+$/, '') || '/';
+
+        // TODO: Could validate path exists via worker message
+        this._cwd = newPath;
     }
 }

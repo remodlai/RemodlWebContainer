@@ -92,6 +92,16 @@ export interface FileSystemPayload {
     deleteDirectory: {
         path: string;
     };
+    rename: {
+        oldPath: string;
+        newPath: string;
+    };
+}
+
+export interface ResizePayload {
+    pid: number;
+    cols: number;
+    rows: number;
 }
 
 
@@ -107,6 +117,7 @@ export type WorkerRequestMessage =
     | { type: 'spawn'; payload: SpawnPayload }
     | { type: 'writeInput'; payload: { pid: number; input: string } }
     | { type: 'terminate'; payload: { pid: number } }
+    | { type: 'resize'; payload: ResizePayload }
     | { type: 'dispose' }
     | { type: 'getStats' }
     | { type: 'writeFile'; payload: FileSystemPayload['writeFile']; }
@@ -116,6 +127,7 @@ export type WorkerRequestMessage =
     | { type: 'createDirectory'; payload: FileSystemPayload['createDirectory']; }
     | { type: 'listDirectory'; payload: FileSystemPayload['listDirectory']; }
     | { type: 'deleteDirectory'; payload: FileSystemPayload['deleteDirectory']; }
+    | { type: 'rename'; payload: FileSystemPayload['rename']; }
     | { type: 'httpRequest'; payload: {request:HttpRequestPayload; port:number} }
     | { type: 'listServers' }
     ;
@@ -143,6 +155,7 @@ export type WorkerResponseMessage =
     | { type: 'fileRead'; payload: { content: string } }
     | { type: 'fileDeleted'; }
     | { type: 'fileList'; payload: { files: string[] } }
+    | { type: 'renamed'; }
     | { type: 'directoryCreated'; }
     | { type: 'directoryDeleted'; }
     | { type: 'directoryList'; payload: { directories: string[] } }

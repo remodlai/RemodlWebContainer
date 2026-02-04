@@ -5,6 +5,18 @@ import { ProcessOptions } from '../process/types';
 import { ProcessEvent } from '../process/types';
 import { HostRequest, IframeBridge } from '../iframe/bridge';
 
+export interface IFSWatcher {
+    close(): void;
+}
+
+export type FSWatchCallback = (eventType: string, filename: string | null) => void;
+
+export interface FSWatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+}
+
 export class ContainerManager {
     private worker: WorkerBridge;
     private iframeBridge?: IframeBridge;
@@ -150,7 +162,8 @@ export class ContainerManager {
                 response.payload.pid,
                 command,
                 args,
-                this.worker
+                this.worker,
+                options.cwd || '/project-fs'
             )
 
             this.processes.set(process.pid, process);
@@ -279,6 +292,59 @@ export class ContainerManager {
         } catch (error: any) {
             throw new Error(`Failed to delete file: ${error.message}`);
         }
+    }
+
+    /**
+     * Rename/move a file or directory
+     */
+    async rename(oldPath: string, newPath: string): Promise<void> {
+        await this.ready;
+
+        if (this._disposed) {
+            throw new Error('Container has been disposed');
+        }
+
+        try {
+            await this.worker.sendMessage({
+                type: 'rename',
+                payload: { oldPath, newPath }
+            });
+        } catch (error: any) {
+            throw new Error(`Failed to rename: ${error.message}`);
+        }
+    }
+
+    /**
+     * Watch for file changes
+     * Note: Requires libSQL backend to emit change events (see Task #13)
+     */
+    watch(
+        filename: string,
+        options?: FSWatchOptions | FSWatchCallback,
+        listener?: FSWatchCallback
+    ): IFSWatcher {
+        // Normalize arguments (options is optional)
+        const actualListener = typeof options === 'function' ? options : listener;
+        const actualOptions = typeof options === 'object' ? options : {};
+
+        // Create a simple watcher that polls or uses events
+        // For now, return a stub that can be enhanced when libSQL emits events
+        let closed = false;
+
+        const watcher: IFSWatcher = {
+            close: () => {
+                closed = true;
+            }
+        };
+
+        // TODO: Implement actual watching via worker message
+        // This requires Task #13 (libSQL change events) to work properly
+        // For now, log a warning
+        if (this.options.debug) {
+            console.warn('watch() is a stub - requires libSQL change event emission');
+        }
+
+        return watcher;
     }
 
     async listFiles(path?: string): Promise<string[]> {
