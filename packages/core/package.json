@@ -7,9 +7,12 @@
 	"types": "./dist/index.d.ts",
 	"scripts": {
 		"compile": "tsc --project tsconfig.json",
+		"build:esbuild": "node build.mjs",
+		"build:esbuild:watch": "node build.mjs --watch",
+		"build:esbuild:analyze": "NODE_ENV=production node build.mjs --analyze",
 		"build:worker": "mkdir -p src/generated && BUILD_TARGET=worker tsup",
 		"build:main": "tsup",
-		"build": "pnpm build:worker && pnpm build:main",
+		"build": "pnpm build:esbuild && pnpm build:worker && pnpm build:main",
 		"clean": "rimraf dist",
 		"dev": "tsc --project tsconfig.json --watch",
 		"test": "jest",
@@ -26,6 +29,14 @@
 			"import": "./dist/index.js",
 			"require": "./dist/index.js"
 		},
+		"./backends/libsql": {
+			"import": "./dist/backends/libsql/index.js",
+			"require": "./dist/backends/libsql/index.js"
+		},
+		"./backends": {
+			"import": "./dist/backends/index.js",
+			"require": "./dist/backends/index.js"
+		},
 		"./worker-code": {
 			"import": "./dist/worker-code.js",
 			"require": "./dist/worker-code.cjs"
@@ -35,21 +46,33 @@
 	"author": "",
 	"license": "ISC",
 	"dependencies": {
-		"@jitl/quickjs-asmjs-mjs-release-sync": "^0.31.0",
-		"@jitl/quickjs-singlefile-browser-release-asyncify": "^0.31.0",
-		"@jitl/quickjs-singlefile-browser-release-sync": "^0.31.0",
+		"@libsql/client": "^0.17.0",
+		"@electric-sql/pglite": "^0.3.15",
+		"@jitl/quickjs-ng-wasmfile-debug-asyncify": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-asyncify-0.31.0.tgz",
+		"@jitl/quickjs-ng-wasmfile-debug-sync": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-sync-0.31.0.tgz",
+		"@jitl/quickjs-ng-wasmfile-release-asyncify": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-release-asyncify-0.31.0.tgz",
+		"@jitl/quickjs-ng-wasmfile-release-sync": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-release-sync-0.31.0.tgz",
+		"@sqlite.org/sqlite-wasm": "3.51.2-build6",
 		"@zenfs/core": "^1.3.3",
 		"buffer": "^6.0.3",
+		"crypto-browserify": "^3.12.1",
 		"fflate": "^0.8.2",
 		"jszip": "^3.10.1",
 		"pako": "^2.1.0",
-		"quickjs-emscripten": "^0.31.0",
+		"quickjs-emscripten": "https://dz2mm03ciss9t.cloudfront.net/quickjs-emscripten-0.31.0.tgz",
+		"quickjs-emscripten-core": "https://dz2mm03ciss9t.cloudfront.net/quickjs-emscripten-core-0.31.0.tgz",
+		"stream-http": "^3.2.0",
 		"tslib": "^2.6.2"
 	},
 	"devDependencies": {
+		"@babel/core": "^7.29.0",
+		"@babel/preset-env": "^7.29.0",
 		"@types/node": "^22.9.0",
 		"@types/pako": "^2.0.3",
-		"esbuild": "^0.19.0",
+		"babelify": "^10.0.0",
+		"browserify": "^17.0.1",
+		"esbuild": "^0.19.12",
+		"esbuild-plugins-node-modules-polyfill": "^1.8.1",
 		"fs.promises": "^0.1.2",
 		"tsup": "^8.3.5",
 		"tsx": "^4.0.0",

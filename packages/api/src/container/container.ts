@@ -5,6 +5,18 @@ import { ProcessOptions } from '../process/types';
 import { ProcessEvent } from '../process/types';
 import { HostRequest, IframeBridge } from '../iframe/bridge';
 
+export interface IFSWatcher {
+    close(): void;
+}
+
+export type FSWatchCallback = (eventType: string, filename: string | null) => void;
+
+export interface FSWatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+}
+
 export class ContainerManager {
     private worker: WorkerBridge;
     private iframeBridge?: IframeBridge;
@@ -15,6 +27,7 @@ export class ContainerManager {
     private _disposed: boolean = false;
     private onServerListen?: (port: number) => void;
     private onServerClose?: (port: number) => void;
+    private fileWatchers: Map<string, Set<FSWatchCallback>> = new Map();
 
     constructor(options: ContainerOptions = {}) {
         this.options = {
@@ -108,7 +121,45 @@ export class ContainerManager {
                     this.options.onServerClose(message.payload.port)
                 }
                 break;
+            case 'fileChange':
+                this.notifyWatchers(message.payload);
+                break;
         }
+    }
+
+    /**
+     * Notify registered watchers of file changes
+     * Events now include the full path, enabling proper path matching
+     */
+    private notifyWatchers(event: { eventType: string; path: string; timestamp: number }): void {
+        const changedPath = event.path;
+        const filename = changedPath.split('/').pop() || changedPath;
+
+        // Check each watcher to see if it matches the changed path
+        this.fileWatchers.forEach((callbacks, watchedPath) => {
+            let shouldNotify = false;
+
+            if (watchedPath === '/') {
+                // Root watcher receives all events
+                shouldNotify = true;
+            } else if (watchedPath === changedPath) {
+                // Exact path match
+                shouldNotify = true;
+            } else if (changedPath.startsWith(watchedPath + '/')) {
+                // Changed path is inside watched directory
+                shouldNotify = true;
+            }
+
+            if (shouldNotify) {
+                callbacks.forEach(cb => {
+                    try {
+                        cb(event.eventType, filename);
+                    } catch (e) {
+                        if (this.options.debug) console.error('Watcher callback error:', e);
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -150,7 +201,8 @@ export class ContainerManager {
                 response.payload.pid,
                 command,
                 args,
-                this.worker
+                this.worker,
+                options.cwd || '/project-fs'
             )
 
             this.processes.set(process.pid, process);
@@ -279,6 +331,80 @@ export class ContainerManager {
         } catch (error: any) {
             throw new Error(`Failed to delete file: ${error.message}`);
         }
+    }
+
+    /**
+     * Rename/move a file or directory
+     */
+    async rename(oldPath: string, newPath: string): Promise<void> {
+        await this.ready;
+
+        if (this._disposed) {
+            throw new Error('Container has been disposed');
+        }
+
+        try {
+            await this.worker.sendMessage({
+                type: 'rename',
+                payload: { oldPath, newPath }
+            });
+        } catch (error: any) {
+            throw new Error(`Failed to rename: ${error.message}`);
+        }
+    }
+
+    /**
+     * Watch for file changes
+     * Registers a callback to be notified when files change.
+     * Supports path matching:
+     * - '/' watches all files
+     * - '/src' watches all files in /src/ directory
+     * - '/src/main.ts' watches a specific file
+     */
+    watch(
+        filename: string,
+        options?: FSWatchOptions | FSWatchCallback,
+        listener?: FSWatchCallback
+    ): IFSWatcher {
+        // Normalize arguments (options is optional)
+        const actualListener = typeof options === 'function' ? options : listener;
+        const actualOptions = typeof options === 'object' ? options : {};
+
+        if (!actualListener) {
+            throw new Error('watch() requires a callback');
+        }
+
+        // Register watcher
+        if (!this.fileWatchers.has(filename)) {
+            this.fileWatchers.set(filename, new Set());
+        }
+        this.fileWatchers.get(filename)!.add(actualListener);
+
+        if (this.options.debug) {
+            console.log(`watch() registered for: ${filename}`);
+        }
+
+        let closed = false;
+        const watcher: IFSWatcher = {
+            close: () => {
+                if (closed) return;
+                closed = true;
+
+                const callbacks = this.fileWatchers.get(filename);
+                if (callbacks) {
+                    callbacks.delete(actualListener);
+                    if (callbacks.size === 0) {
+                        this.fileWatchers.delete(filename);
+                    }
+                }
+
+                if (this.options.debug) {
+                    console.log(`watch() closed for: ${filename}`);
+                }
+            }
+        };
+
+        return watcher;
     }
 
     async listFiles(path?: string): Promise<string[]> {
