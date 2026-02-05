@@ -9,6 +9,8 @@ import { NetworkManager } from "network/manager";
 import { ServerType, VirtualServer } from "./network/types";
 import { NetworkStats } from "./network/types";
 import { HostRequest } from "process/executors/node/modules/network-module";
+import { configure } from '@zenfs/core';
+import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
 
 
 interface ProcessEventData {
@@ -19,10 +21,26 @@ interface ProcessEventData {
     exitCode?: number;
 }
 
+/**
+ * Configuration for libSQL-backed filesystem
+ * Mirrors the type in packages/api/src/worker/types.ts
+ */
+export interface FilesystemConfig {
+    organizationId: string;
+    userId: string;
+    agentId: string;
+    sessionId: string;
+    projectId?: string;
+    syncUrl: string;
+    authToken?: string;
+}
+
 export interface ContainerOptions {
     debug?: boolean;
     onServerListen?: (port: number) => void;
     onServerClose?: (port: number) => void;
+    /** libSQL filesystem configuration (optional - falls back to ZenFSCore if not provided) */
+    filesystem?: FilesystemConfig;
 }
 
 export interface SpawnOptions {
@@ -31,7 +49,35 @@ export interface SpawnOptions {
 }
 
 /**
+ * Result of parallel initialization activities
+ */
+interface InitializationResult {
+    fileSystem: IFileSystem;
+    agentWorkspaceReady: boolean;
+}
+
+/**
  * Main RemodlWebContainer class
+ *
+ * Uses factory pattern for safe async initialization.
+ * All dependencies are fully initialized before the object is available.
+ *
+ * @example
+ * ```typescript
+ * // Without libSQL (in-memory)
+ * const container = await RemodlWebContainer.create({ debug: true });
+ *
+ * // With libSQL backend
+ * const container = await RemodlWebContainer.create({
+ *   filesystem: {
+ *     organizationId: 'org-123',
+ *     userId: 'user-456',
+ *     agentId: 'agent-default',
+ *     sessionId: crypto.randomUUID(),
+ *     syncUrl: 'http://localhost:9010',
+ *   }
+ * });
+ * ```
  */
 export class RemodlWebContainer {
     private fileSystem: IFileSystem;
@@ -40,40 +86,303 @@ export class RemodlWebContainer {
     private outputCallbacks: ((output: string) => void)[] = [];
     readonly networkManager: NetworkManager;
     private debugMode: boolean;
-    constructor(options: ContainerOptions = {}) {
+    private filesystemConfig?: FilesystemConfig;
+
+    /**
+     * Private constructor - use RemodlWebContainer.create() instead
+     *
+     * All parameters are fully initialized before construction.
+     */
+    private constructor(
+        fileSystem: IFileSystem,
+        processManager: ProcessManager,
+        processRegistry: ProcessRegistry,
+        networkManager: NetworkManager,
+        options: ContainerOptions = {}
+    ) {
         this.debugMode = options.debug || false;
-        this.fileSystem = new ZenFSCore();
-        this.processManager = new ProcessManager();
-        this.processRegistry = new ProcessRegistry();
-        this.networkManager = new NetworkManager({
-            getProcess: (pid: number) => this.processManager.getProcess(pid),
-            onServerListen:(port)=>{
+        this.filesystemConfig = options.filesystem;
+        this.fileSystem = fileSystem;
+        this.processManager = processManager;
+        this.processRegistry = processRegistry;
+        this.networkManager = networkManager;
+    }
+
+    /**
+     * Factory method to create a fully-initialized container
+     *
+     * Implements saga pattern:
+     * 1. Start all initialization activities in parallel
+     * 2. Wait for all to complete
+     * 3. Validate all subsystems are ready
+     * 4. Construct and return the container
+     */
+    static async create(options: ContainerOptions = {}): Promise<RemodlWebContainer> {
+        const debug = options.debug || false;
+        const log = (...args: any[]) => {
+            if (debug) console.log('[Container.create]', ...args);
+        };
+
+        log('Starting container initialization...');
+
+        // ============================================================
+        // ACTIVITY 1: Initialize filesystem (async for libSQL)
+        // ============================================================
+        const filesystemActivity = RemodlWebContainer.initializeFilesystem(options, log);
+
+        // ============================================================
+        // ACTIVITY 2: Create process infrastructure (sync but grouped)
+        // ============================================================
+        const processManager = new ProcessManager();
+        const processRegistry = new ProcessRegistry();
+        log('Process infrastructure created');
+
+        // ============================================================
+        // WAIT FOR ALL ACTIVITIES
+        // ============================================================
+        const [initResult] = await Promise.all([
+            filesystemActivity,
+            // Add more parallel activities here as needed
+        ]);
+
+        log('All activities completed');
+
+        // ============================================================
+        // CREATE NETWORK MANAGER (needs processManager reference)
+        // ============================================================
+        const networkManager = new NetworkManager({
+            getProcess: (pid: number) => processManager.getProcess(pid),
+            onServerListen: (port) => {
                 if (options.onServerListen) {
                     options.onServerListen(port);
                 }
             },
-            onServerClose:(port)=>{
+            onServerClose: (port) => {
                 if (options.onServerClose) {
                     options.onServerClose(port);
                 }
             }
         });
+        log('Network manager created');
 
-        // Register default process executors
-        this.processRegistry.registerExecutor(
+        // ============================================================
+        // REGISTER PROCESS EXECUTORS (needs filesystem + networkManager)
+        // ============================================================
+        processRegistry.registerExecutor(
             'javascript',
-            new NodeProcessExecutor(this.fileSystem, this.networkManager)
+            new NodeProcessExecutor(initResult.fileSystem, networkManager)
         );
-        this.processRegistry.registerExecutor(
+        processRegistry.registerExecutor(
             'shell',
-            new ShellProcessExecutor(this.fileSystem)
+            new ShellProcessExecutor(initResult.fileSystem)
         );
-        this.debugLog('Container initialized');
+        log('Process executors registered');
+
+        // ============================================================
+        // VALIDATION: Ensure all subsystems are ready
+        // ============================================================
+        RemodlWebContainer.validateInitialization(initResult, processManager, processRegistry, networkManager, log);
+
+        // ============================================================
+        // CONSTRUCT CONTAINER (everything is ready)
+        // ============================================================
+        const container = new RemodlWebContainer(
+            initResult.fileSystem,
+            processManager,
+            processRegistry,
+            networkManager,
+            options
+        );
+
+        log('Container created successfully');
+        return container;
     }
+
+    /**
+     * Initialize filesystem - either libSQL-backed or default in-memory
+     */
+    private static async initializeFilesystem(
+        options: ContainerOptions,
+        log: (...args: any[]) => void
+    ): Promise<InitializationResult> {
+        if (options.filesystem) {
+            log('Initializing libSQL filesystem...');
+            return await RemodlWebContainer.initializeLibSQLFilesystem(options.filesystem, log);
+        } else {
+            log('Using default in-memory ZenFS');
+            return {
+                fileSystem: new ZenFSCore(),
+                agentWorkspaceReady: false, // No agent workspace in default mode
+            };
+        }
+    }
+
+    /**
+     * Initialize libSQL-backed filesystem with dual mounts
+     */
+    private static async initializeLibSQLFilesystem(
+        config: FilesystemConfig,
+        log: (...args: any[]) => void
+    ): Promise<InitializationResult> {
+        // Build namespace paths
+        const projectNamespace = `org-${config.organizationId}/project-${config.projectId || 'default'}`;
+        const agentNamespace = `org-${config.organizationId}/session-${config.sessionId}`;
+
+        log('Configuring mounts:', {
+            projectNamespace,
+            agentNamespace,
+            syncUrl: config.syncUrl,
+        });
+
+        // Build mount configuration
+        const projectOptions: LibSQLBackendOptions = {
+            url: `file:/project-${config.projectId || 'default'}.db`,
+            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${projectNamespace}` : undefined,
+            authToken: config.authToken,
+            organizationId: config.organizationId,
+            agentId: null, // Project FS has no agent
+            label: 'project',
+        };
+
+        const agentOptions: LibSQLBackendOptions = {
+            url: `file:/agent-${config.sessionId}.db`,
+            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${agentNamespace}` : undefined,
+            authToken: config.authToken,
+            organizationId: config.organizationId,
+            agentId: config.agentId,
+            label: 'agent-workspace',
+        };
+
+        try {
+            // Configure ZenFS with dual mounts
+            await configure({
+                mounts: {
+                    '/': {
+                        backend: LibSQLBackend,
+                        ...projectOptions,
+                    } as any,
+                    '/.agent-workspace': {
+                        backend: LibSQLBackend,
+                        ...agentOptions,
+                    } as any,
+                },
+            });
+
+            log('ZenFS configured with libSQL mounts');
+
+            // Create ZenFSCore - it will use the configured global fs
+            const fileSystem = new ZenFSCore();
+
+            // Ensure agent workspace directories exist
+            await RemodlWebContainer.ensureAgentWorkspaceStructure(fileSystem, log);
+
+            log('libSQL filesystem initialization complete');
+
+            return {
+                fileSystem,
+                agentWorkspaceReady: true,
+            };
+        } catch (error) {
+            log('libSQL filesystem initialization failed:', error);
+            log('Falling back to in-memory ZenFS');
+
+            // Fall back to in-memory ZenFS
+            return {
+                fileSystem: new ZenFSCore(),
+                agentWorkspaceReady: false,
+            };
+        }
+    }
+
+    /**
+     * Ensure the agent workspace has the expected directory structure
+     */
+    private static async ensureAgentWorkspaceStructure(
+        fileSystem: IFileSystem,
+        log: (...args: any[]) => void
+    ): Promise<void> {
+        const dirs = [
+            '/.agent-workspace/memory',
+            '/.agent-workspace/memory/agent',
+            '/.agent-workspace/memory/agent/shared',
+            '/.agent-workspace/conversations',
+            '/.agent-workspace/analysis',
+            '/.agent-workspace/planning',
+            '/.agent-workspace/drafts',
+            '/.agent-workspace/logs',
+            '/.agent-workspace/bin',
+        ];
+
+        for (const dir of dirs) {
+            try {
+                if (!fileSystem.fileExists(dir)) {
+                    fileSystem.createDirectory(dir);
+                    log(`Created directory: ${dir}`);
+                }
+            } catch (e) {
+                // Directory might already exist
+                log(`Directory already exists or error: ${dir}`);
+            }
+        }
+    }
+
+    /**
+     * Validate that all subsystems are properly initialized
+     * Throws if any validation fails
+     */
+    private static validateInitialization(
+        initResult: InitializationResult,
+        processManager: ProcessManager,
+        processRegistry: ProcessRegistry,
+        networkManager: NetworkManager,
+        log: (...args: any[]) => void
+    ): void {
+        log('Validating initialization...');
+
+        // Validate filesystem
+        if (!initResult.fileSystem) {
+            throw new Error('Filesystem initialization failed: fileSystem is null');
+        }
+
+        // Validate process infrastructure
+        if (!processManager) {
+            throw new Error('Process manager initialization failed');
+        }
+        if (!processRegistry) {
+            throw new Error('Process registry initialization failed');
+        }
+
+        // Validate network manager
+        if (!networkManager) {
+            throw new Error('Network manager initialization failed');
+        }
+
+        // Validate executors are registered
+        const jsExecutor = processRegistry.findExecutor('node');
+        const shellExecutor = processRegistry.findExecutor('sh');
+        if (!jsExecutor) {
+            log('Warning: JavaScript executor not registered');
+        }
+        if (!shellExecutor) {
+            log('Warning: Shell executor not registered');
+        }
+
+        log('Validation passed');
+    }
+
     private debugLog(...args: any[]): void {
         if (this.debugMode) {
             console.log('[Container]', ...args);
         }
+    }
+
+    /**
+     * @deprecated Use RemodlWebContainer.create() instead
+     * Kept for backward compatibility - immediately resolves
+     */
+    async waitForInit(): Promise<void> {
+        // With factory pattern, container is always fully initialized
+        return Promise.resolve();
     }
 
     /**
@@ -111,7 +420,7 @@ export class RemodlWebContainer {
     listServers(): VirtualServer[] {
         return this.networkManager.listServers();
     }
-    
+
 
 
     /**
@@ -171,10 +480,10 @@ export class RemodlWebContainer {
         // Add process to manager and start it
         this.processManager.addProcess(process);
         process.start().catch(console.error);
-        
+
         return process;
     }
-    
+
     private setupProcessEventHandlers(process: Process): void {
         process.addEventListener(ProcessEvent.MESSAGE, (data: ProcessEventData) => {
             if (data.stdout) {
@@ -196,12 +505,12 @@ export class RemodlWebContainer {
                 this.notifyOutput(`Process exited with code: ${data.exitCode}\n`);
             }
         });
-        
+
     }
     registerProcessExecutor(type: string, executor: ProcessExecutor): void {
         this.processRegistry.registerExecutor(type, executor);
     }
-    
+
     /**
      * Register an output callback
      */
@@ -316,7 +625,7 @@ export class RemodlWebContainer {
             this.spawnChildProcess(process.pid, data.payload, data.callback);
         });
     }
-    
+
     private async spawnChildProcess(
         parentPid: number,
         payload: ChildProcessPayload,
@@ -330,7 +639,7 @@ export class RemodlWebContainer {
                 throw new Error(`Parent process ${parentPid} not found`);
             }
 
-           
+
 
             // Spawn the child process
             const childProcess = await this.spawn(
@@ -348,7 +657,7 @@ export class RemodlWebContainer {
             childProcess.addEventListener(ProcessEvent.ERROR, (data: ProcessEventData) => {
                 if (data.error) {
                     parentProcess.emit(ProcessEvent.MESSAGE, { stderr: data.error.message + '\n' });
-                    
+
                 }
             });
 

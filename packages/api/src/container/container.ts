@@ -54,10 +54,11 @@ export class ContainerManager {
         }
 
         try {
-            // Initialize worker with options
+            // Initialize worker with options (including filesystem config if provided)
             await this.worker.initialize({
                 debug: this.options.debug,
-                memoryLimit: this.options.memoryLimit
+                memoryLimit: this.options.memoryLimit,
+                filesystem: this.options.filesystem,  // Pass libSQL config to worker
             });
 
             // Set up worker message handlers
