@@ -11,6 +11,8 @@ import { NetworkStats } from "./network/types";
 import { HostRequest } from "process/executors/node/modules/network-module";
 import { configure } from '@zenfs/core';
 import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
+import { LibSQLStore } from "./backends/libsql/store";
+import { createClient } from '@libsql/client';
 
 
 interface ProcessEventData {
@@ -54,6 +56,8 @@ export interface SpawnOptions {
 interface InitializationResult {
     fileSystem: IFileSystem;
     agentWorkspaceReady: boolean;
+    projectStore?: LibSQLStore;  // For direct queries like textSearch
+    agentStore?: LibSQLStore;
 }
 
 /**
@@ -87,6 +91,9 @@ export class RemodlWebContainer {
     readonly networkManager: NetworkManager;
     private debugMode: boolean;
     private filesystemConfig?: FilesystemConfig;
+    // LibSQL stores for direct queries (textSearch, etc.)
+    private projectStore?: LibSQLStore;
+    private agentStore?: LibSQLStore;
 
     /**
      * Private constructor - use RemodlWebContainer.create() instead
@@ -98,7 +105,9 @@ export class RemodlWebContainer {
         processManager: ProcessManager,
         processRegistry: ProcessRegistry,
         networkManager: NetworkManager,
-        options: ContainerOptions = {}
+        options: ContainerOptions = {},
+        projectStore?: LibSQLStore,
+        agentStore?: LibSQLStore
     ) {
         this.debugMode = options.debug || false;
         this.filesystemConfig = options.filesystem;
@@ -106,6 +115,8 @@ export class RemodlWebContainer {
         this.processManager = processManager;
         this.processRegistry = processRegistry;
         this.networkManager = networkManager;
+        this.projectStore = projectStore;
+        this.agentStore = agentStore;
     }
 
     /**
@@ -191,7 +202,9 @@ export class RemodlWebContainer {
             processManager,
             processRegistry,
             networkManager,
-            options
+            options,
+            initResult.projectStore,
+            initResult.agentStore
         );
 
         log('Container created successfully');
@@ -254,6 +267,27 @@ export class RemodlWebContainer {
         };
 
         try {
+            // Create libSQL clients for direct query access (textSearch, etc.)
+            const projectClient = createClient({
+                url: projectOptions.url || ':memory:',
+                syncUrl: projectOptions.syncUrl,
+                authToken: projectOptions.authToken,
+            });
+            const agentClient = createClient({
+                url: agentOptions.url || ':memory:',
+                syncUrl: agentOptions.syncUrl,
+                authToken: agentOptions.authToken,
+            });
+
+            // Create stores for direct query access
+            const projectStore = new LibSQLStore(projectClient, projectOptions);
+            const agentStore = new LibSQLStore(agentClient, agentOptions);
+
+            // Initialize stores (creates schema if needed)
+            await projectStore.initialize();
+            await agentStore.initialize();
+            log('LibSQL stores initialized for direct queries');
+
             // Configure ZenFS with dual mounts
             await configure({
                 mounts: {
@@ -281,6 +315,8 @@ export class RemodlWebContainer {
             return {
                 fileSystem,
                 agentWorkspaceReady: true,
+                projectStore,
+                agentStore,
             };
         } catch (error) {
             log('libSQL filesystem initialization failed:', error);
@@ -452,6 +488,47 @@ export class RemodlWebContainer {
 
     listDirectory(path: string): string[] {
         return this.fileSystem.listDirectory(path);
+    }
+
+    /**
+     * Text search using FTS5 + fuzzy matching
+     *
+     * Requires libSQL backend. Falls back to empty results if not available.
+     *
+     * @param query - Search query string
+     * @param options - Search options
+     * @returns Search results with file paths, line numbers, and match context
+     */
+    async textSearch(
+        query: string,
+        options: {
+            folders?: string[];
+            includes?: string[];
+            excludes?: string[];
+            caseSensitive?: boolean;
+            isRegex?: boolean;
+            resultLimit?: number;
+            fuzzyThreshold?: number;
+        } = {}
+    ): Promise<{
+        matches: Array<{
+            path: string;
+            lineNumber: number;
+            lineContent: string;
+            matchStart: number;
+            matchEnd: number;
+        }>;
+        truncated: boolean;
+    }> {
+        // Use project store for text search (searches user's codebase)
+        if (this.projectStore) {
+            this.debugLog('textSearch: using libSQL FTS5 + fuzzy search');
+            return this.projectStore.textSearch(query, options);
+        }
+
+        // Fallback: no libSQL backend, return empty results
+        this.debugLog('textSearch: libSQL backend not available, returning empty results');
+        return { matches: [], truncated: false };
     }
 
     /**

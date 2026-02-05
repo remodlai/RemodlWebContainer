@@ -250,4 +250,206 @@ export class LibSQLStore implements Store {
       await this.client.close();
     }
   }
+
+  /**
+   * Text search using FTS5 with fuzzy fallback
+   *
+   * Search strategy:
+   * 1. FTS5 MATCH for fast, indexed word matching
+   * 2. Fuzzy fallback (fuzzy_damlev) for typo tolerance if no results
+   *
+   * @param query - Search query string
+   * @param options - Search options
+   * @returns Array of search matches with line information
+   */
+  public async textSearch(
+    query: string,
+    options: {
+      folders?: string[];
+      includes?: string[];
+      excludes?: string[];
+      caseSensitive?: boolean;
+      isRegex?: boolean;
+      resultLimit?: number;
+      fuzzyThreshold?: number;
+    } = {}
+  ): Promise<{
+    matches: Array<{
+      path: string;
+      lineNumber: number;
+      lineContent: string;
+      matchStart: number;
+      matchEnd: number;
+    }>;
+    truncated: boolean;
+  }> {
+    const limit = options.resultLimit || 500;
+    const fuzzyThreshold = options.fuzzyThreshold ?? 2;
+    const matches: Array<{
+      path: string;
+      lineNumber: number;
+      lineContent: string;
+      matchStart: number;
+      matchEnd: number;
+    }> = [];
+
+    try {
+      // Build folder filter
+      let folderFilter = '';
+      const folderArgs: string[] = [];
+      if (options.folders && options.folders.length > 0) {
+        const folderClauses = options.folders.map((folder, i) => {
+          folderArgs.push(folder.endsWith('/') ? `${folder}%` : `${folder}/%`);
+          return `f.path LIKE ?`;
+        });
+        folderFilter = `AND (${folderClauses.join(' OR ')})`;
+      }
+
+      // Build exclude filter
+      let excludeFilter = '';
+      const excludeArgs: string[] = [];
+      if (options.excludes && options.excludes.length > 0) {
+        for (const pattern of options.excludes) {
+          // Convert glob to SQL LIKE pattern
+          const likePattern = pattern
+            .replace(/\*\*/g, '%')
+            .replace(/\*/g, '%')
+            .replace(/\?/g, '_');
+          excludeArgs.push(likePattern);
+          excludeFilter += ` AND f.path NOT LIKE ?`;
+        }
+      }
+
+      // First, try FTS5 search
+      const ftsQuery = options.isRegex ? query : query.replace(/['"]/g, '');
+      const ftsResult = await this.client.execute({
+        sql: `
+          SELECT f.path, f.content
+          FROM files f
+          INNER JOIN files_fts fts ON f.rowid = fts.rowid
+          WHERE fts.content MATCH ?
+          AND f.organization_id = ?
+          AND (f.agent_id = ? OR (f.agent_id IS NULL AND ? IS NULL))
+          AND f.mode & 61440 = 32768  -- Regular files only (S_IFREG)
+          ${folderFilter}
+          ${excludeFilter}
+          LIMIT ?
+        `,
+        args: [
+          ftsQuery,
+          this.organizationId,
+          this.agentId,
+          this.agentId,
+          ...folderArgs,
+          ...excludeArgs,
+          limit,
+        ],
+      });
+
+      // Process FTS results
+      for (const row of ftsResult.rows) {
+        const path = row.path as string;
+        const content = row.content as string | null;
+
+        if (!content) continue;
+
+        // Find matching lines
+        const lines = content.split('\n');
+        const searchLower = options.caseSensitive ? query : query.toLowerCase();
+
+        for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+          const line = lines[lineNum];
+          const lineLower = options.caseSensitive ? line : line.toLowerCase();
+
+          let matchIndex = lineLower.indexOf(searchLower);
+          while (matchIndex !== -1) {
+            matches.push({
+              path,
+              lineNumber: lineNum + 1,
+              lineContent: line,
+              matchStart: matchIndex,
+              matchEnd: matchIndex + query.length,
+            });
+
+            if (matches.length >= limit) break;
+            matchIndex = lineLower.indexOf(searchLower, matchIndex + 1);
+          }
+
+          if (matches.length >= limit) break;
+        }
+
+        if (matches.length >= limit) break;
+      }
+
+      // If no FTS results and fuzzy is enabled, try fuzzy search on paths
+      if (matches.length === 0 && fuzzyThreshold > 0) {
+        const fuzzyResult = await this.client.execute({
+          sql: `
+            SELECT path, content
+            FROM files
+            WHERE organization_id = ?
+            AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))
+            AND mode & 61440 = 32768
+            AND (
+              fuzzy_damlev(path, ?) <= ?
+              OR path LIKE '%' || ? || '%'
+            )
+            ${folderFilter}
+            ${excludeFilter}
+            LIMIT ?
+          `,
+          args: [
+            this.organizationId,
+            this.agentId,
+            this.agentId,
+            query,
+            fuzzyThreshold,
+            query,
+            ...folderArgs,
+            ...excludeArgs,
+            limit,
+          ],
+        });
+
+        for (const row of fuzzyResult.rows) {
+          const path = row.path as string;
+          const content = row.content as string | null;
+
+          if (!content) continue;
+
+          const lines = content.split('\n');
+          const searchLower = options.caseSensitive ? query : query.toLowerCase();
+
+          for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+            const line = lines[lineNum];
+            const lineLower = options.caseSensitive ? line : line.toLowerCase();
+
+            const matchIndex = lineLower.indexOf(searchLower);
+            if (matchIndex !== -1) {
+              matches.push({
+                path,
+                lineNumber: lineNum + 1,
+                lineContent: line,
+                matchStart: matchIndex,
+                matchEnd: matchIndex + query.length,
+              });
+
+              if (matches.length >= limit) break;
+            }
+          }
+
+          if (matches.length >= limit) break;
+        }
+      }
+
+      return {
+        matches,
+        truncated: matches.length >= limit,
+      };
+    } catch (error) {
+      console.error('textSearch error:', error);
+      // If FTS5 table doesn't exist yet, return empty results
+      return { matches: [], truncated: false };
+    }
+  }
 }

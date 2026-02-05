@@ -105,6 +105,36 @@ CREATE TRIGGER IF NOT EXISTS agent_memory_fts_update AFTER UPDATE ON agent_memor
 END;
 
 -- ============================================================
+-- TABLE: files_fts (FTS5 Virtual Table)
+-- Full-text search for file content (user search UI)
+-- Supports FTS5 MATCH queries with ranking
+-- ============================================================
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+  path,
+  content,
+  content=files,
+  content_rowid=rowid
+);
+
+-- Triggers to keep FTS in sync with files table
+CREATE TRIGGER IF NOT EXISTS files_fts_insert AFTER INSERT ON files BEGIN
+  INSERT INTO files_fts(rowid, path, content)
+  VALUES (new.rowid, new.path, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_fts_delete AFTER DELETE ON files BEGIN
+  INSERT INTO files_fts(files_fts, rowid, path, content)
+  VALUES ('delete', old.rowid, old.path, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_fts_update AFTER UPDATE ON files BEGIN
+  INSERT INTO files_fts(files_fts, rowid, path, content)
+  VALUES ('delete', old.rowid, old.path, old.content);
+  INSERT INTO files_fts(rowid, path, content)
+  VALUES (new.rowid, new.path, new.content);
+END;
+
+-- ============================================================
 -- INITIAL DATA: Root directory
 -- Must be inserted when creating a new filesystem
 -- ============================================================
