@@ -87,6 +87,9 @@ importers:
       '@remodl-web-container/core':
         specifier: workspace:*
         version: link:../core
+      eventemitter3:
+        specifier: ^5.0.1
+        version: 5.0.1
       react:
         specifier: ^18.0.0
         version: 18.3.1
