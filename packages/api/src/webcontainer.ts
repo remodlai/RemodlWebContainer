@@ -17,12 +17,18 @@
 import { ContainerManager } from './container/container';
 import { VirtualProcess } from './process/process';
 import { EventEmitter } from 'eventemitter3';
+import type { FilesystemConfig } from './worker/types';
 
 export interface WebContainerBootOptions {
   coep?: 'credentialless' | 'require-corp';
   workdirName?: string;
   forwardPreviewErrors?: boolean;
+  /** libSQL filesystem configuration for persistence */
+  filesystem?: FilesystemConfig;
 }
+
+// Re-export FilesystemConfig for consumers
+export type { FilesystemConfig };
 
 export type BufferEncoding = 'ascii' | 'utf8' | 'utf-8' | 'utf16le' | 'ucs2' | 'ucs-2' | 'base64' | 'base64url' | 'latin1' | 'binary' | 'hex';
 
@@ -108,11 +114,12 @@ export class WebContainer extends EventEmitter {
   static async boot(options: WebContainerBootOptions = {}): Promise<WebContainer> {
     const workdirName = options.workdirName || '/home/project';
 
-    // Create container
+    // Create container with optional libSQL filesystem config
     const container = new ContainerManager({
       debug: false,
       maxProcesses: 20,
       memoryLimit: 1024 * 1024 * 1024, // 1GB
+      filesystem: options.filesystem,  // Pass through libSQL config
       onServerListen: (port) => {
         // Server listening event
       },

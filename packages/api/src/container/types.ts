@@ -1,9 +1,13 @@
+import type { FilesystemConfig } from '../worker/types';
+
 export interface ContainerOptions {
     debug?: boolean;
     maxProcesses?: number;
     memoryLimit?: number;
     onServerListen?: (port: number) => void;
     onServerClose?: (port: number) => void;
+    /** libSQL filesystem configuration (optional - falls back to ZenFSCore if not provided) */
+    filesystem?: FilesystemConfig;
 }
 
 export interface ContainerStats {

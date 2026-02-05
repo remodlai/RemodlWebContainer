@@ -33,9 +33,31 @@ export type ProcessErrorPayload = {
     error: string;
 };
 
+/**
+ * Configuration for libSQL-backed filesystem
+ */
+export interface FilesystemConfig {
+    /** Organization ID from Keycloak */
+    organizationId: string;
+    /** User ID (sub claim from Keycloak) */
+    userId: string;
+    /** Agent ID - which agent co-worker is active */
+    agentId: string;
+    /** Session ID - unique per WebContainer boot */
+    sessionId: string;
+    /** Project ID (optional, for project FS namespace) */
+    projectId?: string;
+    /** libsql-server sync URL (e.g., http://localhost:9010) */
+    syncUrl: string;
+    /** Auth token for libsql-server */
+    authToken?: string;
+}
+
 export interface WorkerInitOptions {
     debug?: boolean;
     memoryLimit?: number;
+    /** libSQL filesystem configuration (optional - falls back to ZenFSCore if not provided) */
+    filesystem?: FilesystemConfig;
 }
 export interface HttpRequestPayload {
     id: string;

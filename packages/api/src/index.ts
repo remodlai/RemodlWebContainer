@@ -10,6 +10,7 @@ export type {
   BufferEncoding,
   WatchPathsOptions,
   PathWatcherEvent,
+  FilesystemConfig,  // libSQL filesystem configuration
 } from './webcontainer';
 
 // Lower-level APIs (for advanced usage)

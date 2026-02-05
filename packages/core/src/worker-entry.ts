@@ -13,15 +13,19 @@ self.onmessage = async function (e: MessageEvent<WorkerMessage>) {
     switch (type) {
         case 'initialize':
             let { payload } = e.data;
-            // Initialize container when worker starts
-            container = new RemodlWebContainer({ debug: payload.debug,
+            // Initialize container using factory pattern
+            // All async initialization completes before create() returns
+            container = await RemodlWebContainer.create({
+                debug: payload.debug,
+                filesystem: payload.filesystem,  // Pass libSQL config if provided
                 onServerListen:(port)=>{
                     sendWorkerResponse({ type: 'onServerListen', id, payload:{port} });
                 },
                 onServerClose:(port)=>{
                     sendWorkerResponse({ type: 'onServerClose', id, payload:{port} });
                 }
-             });
+            });
+
             // Send back confirmation
             sendWorkerResponse({ type: 'initialized', id });
             break;
