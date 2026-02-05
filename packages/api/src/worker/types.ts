@@ -135,6 +135,42 @@ export interface FileSystemPayload {
     };
 }
 
+/**
+ * Text search options for FTS5 + fuzzy search
+ */
+export interface TextSearchPayload {
+    query: string;
+    options: {
+        folders?: string[];
+        includes?: string[];
+        excludes?: string[];
+        caseSensitive?: boolean;
+        isRegex?: boolean;
+        isWordMatch?: boolean;
+        resultLimit?: number;
+        fuzzyThreshold?: number;  // Max edit distance for fuzzy fallback (default: 2)
+    };
+}
+
+/**
+ * Individual search match result
+ */
+export interface TextSearchMatchResult {
+    path: string;
+    lineNumber: number;
+    lineContent: string;
+    matchStart: number;
+    matchEnd: number;
+}
+
+/**
+ * Search results response
+ */
+export interface TextSearchResultPayload {
+    matches: TextSearchMatchResult[];
+    truncated: boolean;  // True if resultLimit was hit
+}
+
 export interface ResizePayload {
     pid: number;
     cols: number;
@@ -167,6 +203,7 @@ export type WorkerRequestMessage =
     | { type: 'rename'; payload: FileSystemPayload['rename']; }
     | { type: 'httpRequest'; payload: {request:HttpRequestPayload; port:number} }
     | { type: 'listServers' }
+    | { type: 'textSearch'; payload: TextSearchPayload }
     ;
 
 
@@ -208,6 +245,8 @@ export type WorkerResponseMessage =
     | { type: 'onServerClose'; payload: ServerClosePayload }
     // File change events (broadcast for watch())
     | { type: 'fileChange'; payload: FileChangePayload }
+    // Text search results
+    | { type: 'textSearchResult'; payload: TextSearchResultPayload }
 
 
 export type WorkerMessage = WorkerMessageBase & (WorkerRequestMessage | WorkerResponseMessage);

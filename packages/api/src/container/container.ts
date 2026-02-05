@@ -4,6 +4,7 @@ import { ContainerOptions, ContainerStats } from './types';
 import { ProcessOptions } from '../process/types';
 import { ProcessEvent } from '../process/types';
 import { HostRequest, IframeBridge } from '../iframe/bridge';
+import type { TextSearchPayload, TextSearchResultPayload, TextSearchMatchResult } from '../worker/types';
 
 export interface IFSWatcher {
     close(): void;
@@ -464,6 +465,41 @@ export class ContainerManager {
             return result.payload.directories;
         } catch (error: any) {
             throw new Error(`Failed to list directory: ${error.message}`);
+        }
+    }
+
+    /**
+     * Text search across files using FTS5 + fuzzy matching
+     *
+     * Search strategy:
+     * 1. FTS5 MATCH for exact word matching with ranking
+     * 2. Fuzzy fallback (fuzzy_damlev) for typo tolerance if no results
+     *
+     * @param query - Search query string
+     * @param options - Search options (folders, includes, excludes, etc.)
+     * @returns Search results with file paths, line numbers, and match context
+     */
+    async textSearch(
+        query: string,
+        options: TextSearchPayload['options'] = {}
+    ): Promise<TextSearchResultPayload> {
+        await this.ready;
+
+        if (this._disposed) {
+            throw new Error('Container has been disposed');
+        }
+
+        try {
+            const result = await this.worker.sendMessage({
+                type: 'textSearch',
+                payload: { query, options }
+            });
+            if (result.type !== 'textSearchResult') {
+                throw new Error("Invalid response type");
+            }
+            return result.payload;
+        } catch (error: any) {
+            throw new Error(`Failed to search files: ${error.message}`);
         }
     }
 

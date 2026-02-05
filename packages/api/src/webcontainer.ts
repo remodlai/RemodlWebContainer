@@ -27,6 +27,91 @@ export interface WebContainerBootOptions {
   filesystem?: FilesystemConfig;
 }
 
+/**
+ * SpawnOptions for process creation
+ */
+export interface SpawnOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  terminal?: { cols: number; rows: number };
+}
+
+/**
+ * TextSearchOptions - options for internal.textSearch()
+ * Note: Text search is not yet implemented
+ */
+export interface TextSearchOptions {
+  folders?: string[];
+  homeDir?: string;
+  includes?: string[];
+  excludes?: string[];
+  gitignore?: boolean;
+  requireGit?: boolean;
+  globalIgnoreFiles?: boolean;
+  ignoreSymlinks?: boolean;
+  resultLimit?: number;
+  isRegex?: boolean;
+  caseSensitive?: boolean;
+  isWordMatch?: boolean;
+  // Legacy options
+  include?: string[];
+  exclude?: string[];
+  maxResults?: number;
+  regex?: boolean;
+}
+
+/**
+ * TextSearchMatch - match info from text search
+ */
+export interface TextSearchMatch {
+  preview: {
+    text: string;
+    matches: Array<{ startLineNumber: number }>;
+  };
+  ranges: Array<{
+    startLineNumber: number;
+    startColumn: number;
+    endColumn: number;
+  }>;
+}
+
+/**
+ * TextSearchOnProgressCallback - callback for text search progress
+ */
+export type TextSearchOnProgressCallback = (filePath: string, matches: TextSearchMatch[]) => void;
+
+/**
+ * TextSearchResult - result from text search (legacy)
+ */
+export interface TextSearchResult {
+  path: string;
+  line: number;
+  column: number;
+  match: string;
+  context?: string;
+}
+
+/**
+ * AuthAPI - Authentication API (stub)
+ * Note: Auth API is not yet implemented
+ */
+export interface AuthAPI {
+  loggedIn(): Promise<boolean>;
+  login(): Promise<void>;
+  logout(): Promise<void>;
+  onTokenChanged(callback: () => void): () => void;
+}
+
+/**
+ * Auth singleton (stub)
+ */
+export const auth: AuthAPI = {
+  async loggedIn() { return false; },
+  async login() { console.warn('auth.login() not implemented'); },
+  async logout() { console.warn('auth.logout() not implemented'); },
+  onTokenChanged(callback: () => void) { return () => {}; },
+};
+
 // Re-export FilesystemConfig for consumers
 export type { FilesystemConfig };
 
@@ -154,13 +239,13 @@ export class WebContainer extends EventEmitter {
   /**
    * Spawn a process
    */
-  async spawn(command: string, args?: string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<WebContainerProcess> {
+  async spawn(command: string, args?: string[], options?: SpawnOptions): Promise<WebContainerProcess> {
     const process = await this.container.spawn(command, args || [], {
       cwd: options?.cwd || this._workdirName,
       env: options?.env,
     });
 
-    return new WebContainerProcess(process);
+    return new WebContainerProcess(process, options?.terminal);
   }
 
   /**
@@ -377,6 +462,79 @@ class WebContainerInternal {
     const regex = new RegExp(`^${regexPattern}$`);
     return regex.test(path);
   }
+
+  /**
+   * Text search using FTS5 + fuzzy matching
+   *
+   * Queries libSQL directly for fast, indexed search.
+   * Uses FTS5 MATCH first, falls back to fuzzy_damlev for typo tolerance.
+   *
+   * @param query - Search query string
+   * @param options - Search options matching TextSearchOptions interface
+   * @param onProgress - Callback for streaming results
+   * @returns Disposable handle
+   */
+  textSearch(
+    query: string,
+    options: TextSearchOptions,
+    onProgress: TextSearchOnProgressCallback
+  ): { dispose: () => void } {
+    let cancelled = false;
+
+    // Run search asynchronously
+    (async () => {
+      try {
+        const result = await this.container.textSearch(query, {
+          folders: options.folders,
+          includes: options.includes || options.include,
+          excludes: options.excludes || options.exclude,
+          caseSensitive: options.caseSensitive,
+          isRegex: options.isRegex || options.regex,
+          isWordMatch: options.isWordMatch,
+          resultLimit: options.resultLimit || options.maxResults || 500,
+          fuzzyThreshold: 2,  // Max edit distance for typo tolerance
+        });
+
+        if (cancelled) return;
+
+        // Group results by file and convert to TextSearchMatch format
+        const matchesByFile = new Map<string, TextSearchMatch[]>();
+
+        for (const match of result.matches) {
+          if (!matchesByFile.has(match.path)) {
+            matchesByFile.set(match.path, []);
+          }
+
+          matchesByFile.get(match.path)!.push({
+            preview: {
+              text: match.lineContent,
+              matches: [{ startLineNumber: match.lineNumber }],
+            },
+            ranges: [{
+              startLineNumber: match.lineNumber,
+              startColumn: match.matchStart,
+              endColumn: match.matchEnd,
+            }],
+          });
+        }
+
+        // Call onProgress for each file
+        for (const [filePath, matches] of matchesByFile) {
+          if (cancelled) break;
+          onProgress(filePath, matches);
+        }
+
+      } catch (error) {
+        console.error('textSearch error:', error);
+      }
+    })();
+
+    return {
+      dispose: () => {
+        cancelled = true;
+      }
+    };
+  }
 }
 
 /**
@@ -386,9 +544,11 @@ export class WebContainerProcess {
   private process: VirtualProcess;
   public output: ReadableStream<string>;
   public input: WritableStream<string>;
+  private _terminalDimensions?: { cols: number; rows: number };
 
-  constructor(process: VirtualProcess) {
+  constructor(process: VirtualProcess, terminal?: { cols: number; rows: number }) {
     this.process = process;
+    this._terminalDimensions = terminal;
 
     // Create readable stream for output
     // Track stream state to prevent enqueue after close/error
@@ -444,5 +604,16 @@ export class WebContainerProcess {
 
   async kill(): Promise<void> {
     await this.process.kill();
+  }
+
+  /**
+   * Resize the terminal
+   */
+  resize(dimensions: { cols: number; rows: number }): void {
+    this._terminalDimensions = dimensions;
+    // Send resize to process if it supports it
+    if (this.process && typeof (this.process as any).resize === 'function') {
+      (this.process as any).resize(dimensions);
+    }
   }
 }

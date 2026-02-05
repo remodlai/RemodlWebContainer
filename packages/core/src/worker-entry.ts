@@ -270,6 +270,25 @@ self.onmessage = async function (e: MessageEvent<WorkerMessage>) {
                 });
             }
         break;
+        case 'textSearch':
+            try {
+                const { query, options } = e.data.payload;
+                const result = await container.textSearch(query, options);
+                sendWorkerResponse({
+                    type: 'textSearchResult',
+                    id,
+                    payload: result
+                });
+            }
+            catch (error: any) {
+                sendWorkerResponse({
+                    type: 'error',
+                    id,
+                    payload: { error: error.message }
+                });
+            }
+            break;
+
         case 'httpRequest':
             const { request, port } = e.data.payload;
             const { id:reqId,method, url, headers, body,path } = request;
