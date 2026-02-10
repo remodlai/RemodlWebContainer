@@ -184,13 +184,71 @@ export class NodeProcess extends Process {
         const requireFn = context.newFunction("require", (moduleId) => {
             const id = context.getString(moduleId)
 
-
-            // patching http module
-            if(context.getString(moduleId)==='http'&&this.networkModule){
+            // Special case: http module
+            if(id === 'http' && this.networkModule){
                 this.httpModule = this.networkModule.createHttpModule()
                 return this.httpModule.dup()
             }
 
+            // Check if this is a Node.js builtin module
+            // Builtins: 'fs', 'path', 'buffer', etc. OR internal modules: 'internal/errors', etc.
+            if (!id.startsWith('./') && !id.startsWith('/')) {
+                // Try to resolve as Node.js builtin first
+                let builtinPath: string | null = null;
+
+                if (id.startsWith('internal/')) {
+                    // Internal module: internal/errors -> /builtins/node/internal/errors.js
+                    builtinPath = `/builtins/node/${id}.js`;
+                } else if (id.startsWith('node:')) {
+                    // node: prefix: node:fs -> /builtins/node/fs.js
+                    builtinPath = `/builtins/node/${id.slice(5)}.js`;
+                } else {
+                    // Check if it's a core Node.js module (fs, path, buffer, etc.)
+                    // Try loading from /builtins/node/
+                    builtinPath = `/builtins/node/${id}.js`;
+                }
+
+                // Try to load the builtin
+                if (builtinPath) {
+                    try {
+                        const builtinCode = this.fileSystem.readFile(builtinPath);
+                        if (builtinCode) {
+                            // Wrap in CommonJS and evaluate
+                            const wrappedCode = `(function(exports, require, module, __filename, __dirname) {
+                                ${builtinCode}
+                            })`;
+
+                            const result = context.evalCode(wrappedCode, builtinPath);
+                            if (result.error) {
+                                throw new Error(`Failed to eval ${builtinPath}: ${context.dump(result.error)}`);
+                            }
+
+                            // Create module object
+                            const moduleObj = context.newObject();
+                            const exportsObj = context.newObject();
+                            context.setProp(moduleObj, 'exports', exportsObj);
+
+                            // Call the wrapper function
+                            const callResult = context.callFunction(result.value, context.undefined, exportsObj, requireFn, moduleObj);
+                            result.value.dispose();
+
+                            if (callResult.error) {
+                                throw new Error(`Failed to execute ${builtinPath}: ${context.dump(callResult.error)}`);
+                            }
+                            callResult.value.dispose();
+
+                            // Return module.exports
+                            const exports = context.getProp(moduleObj, 'exports');
+                            moduleObj.dispose();
+                            exportsObj.dispose();
+
+                            return exports;
+                        }
+                    } catch (e) {
+                        // Builtin not found or failed to load, try node_modules
+                    }
+                }
+            }
 
             // If not a built-in module, try to load as a regular module
             try {
