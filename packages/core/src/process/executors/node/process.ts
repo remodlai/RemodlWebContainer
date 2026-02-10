@@ -247,124 +247,104 @@ export class NodeProcess extends Process {
     }
 
     private setupNodeInternals(context: QuickJSContext) {
-        // Load and inject primordials as a global
-        // Primordials provide frozen versions of built-in prototypes/functions
+        // Load and inject primordials from actual builtin file
         try {
-            const primordialsCode = `
-                // Load primordials from builtins
-                // This must be done before any Node.js internal modules are loaded
-                (function() {
-                    try {
-                        // For now, create a minimal primordials stub
-                        // Full implementation will be loaded from builtins/primordials.cjs
-                        const primordials = {
-                            // Array methods
-                            ArrayIsArray: Array.isArray.bind(Array),
-                            ArrayPrototypePush: Array.prototype.push,
-                            ArrayPrototypeSlice: Array.prototype.slice,
+            // Try to load from /builtins/primordials.cjs first
+            let primordialsCode: string | undefined;
+            try {
+                primordialsCode = this.fileSystem.readFile('/builtins/primordials.cjs');
+            } catch (e) {
+                // Fallback: try without leading slash
+                try {
+                    primordialsCode = this.fileSystem.readFile('builtins/primordials.cjs');
+                } catch (e2) {
+                    console.warn('Could not load primordials.cjs from filesystem, using fallback stub');
+                }
+            }
 
-                            // Object methods
-                            ObjectDefineProperty: Object.defineProperty.bind(Object),
-                            ObjectKeys: Object.keys.bind(Object),
-                            ObjectPrototypeHasOwnProperty: Object.prototype.hasOwnProperty,
-
-                            // Function methods
-                            FunctionPrototypeCall: Function.prototype.call,
-                            FunctionPrototypeBind: Function.prototype.bind,
-
-                            // String methods
-                            StringPrototypeSlice: String.prototype.slice,
-                            StringPrototypeIndexOf: String.prototype.indexOf,
-
-                            // Number/Math
-                            NumberIsNaN: Number.isNaN.bind(Number),
-                            MathMax: Math.max.bind(Math),
-                            MathMin: Math.min.bind(Math),
-
-                            // Promise
-                            Promise: Promise,
-                            PromiseResolve: Promise.resolve.bind(Promise),
-
-                            // Symbol
-                            Symbol: Symbol,
-                            SymbolFor: Symbol.for.bind(Symbol),
-                        };
-
-                        // Freeze primordials to prevent modification
-                        Object.freeze(primordials);
-                        return primordials;
-                    } catch (e) {
-                        console.error('Failed to create primordials:', e);
-                        return {};
-                    }
-                })();
-            `;
-
-            const primordialsResult = context.evalCode(primordialsCode, 'primordials-init.js');
-            if (primordialsResult.error) {
-                console.error('Failed to load primordials:', context.dump(primordialsResult.error));
-                primordialsResult.error.dispose();
+            if (primordialsCode) {
+                // Load actual primordials file (200+ primordials)
+                const primordialsResult = context.evalCode(primordialsCode, 'primordials.cjs');
+                if (primordialsResult.error) {
+                    console.error('Failed to eval primordials.cjs:', context.dump(primordialsResult.error));
+                    primordialsResult.error.dispose();
+                } else {
+                    context.setProp(context.global, 'primordials', primordialsResult.value);
+                    primordialsResult.value.dispose();
+                }
             } else {
-                // Set primordials as a global
-                context.setProp(context.global, 'primordials', primordialsResult.value);
-                primordialsResult.value.dispose();
+                // Fallback minimal stub if file not found
+                console.warn('Using minimal primordials stub (file not found)');
+                const stubCode = `(function() {
+                    const primordials = {
+                        ArrayIsArray: Array.isArray.bind(Array),
+                        ObjectKeys: Object.keys.bind(Object),
+                        Promise: Promise,
+                    };
+                    Object.freeze(primordials);
+                    return primordials;
+                })();`;
+                const stubResult = context.evalCode(stubCode, 'primordials-stub.js');
+                if (!stubResult.error) {
+                    context.setProp(context.global, 'primordials', stubResult.value);
+                    stubResult.value.dispose();
+                }
             }
         } catch (e) {
             console.error('Error setting up primordials:', e);
         }
 
-        // Load and inject internalBinding as a global function
+        // Load and inject internalBinding from actual builtin file
         try {
-            const internalBindingCode = `
-                // Create internalBinding function
-                (function() {
-                    // Stub implementation - will be replaced with actual builtins/internalBinding.cjs
+            // Try to load from /builtins/internalBinding.cjs first
+            let bindingCode: string | undefined;
+            try {
+                bindingCode = this.fileSystem.readFile('/builtins/internalBinding.cjs');
+            } catch (e) {
+                // Fallback: try without leading slash
+                try {
+                    bindingCode = this.fileSystem.readFile('builtins/internalBinding.cjs');
+                } catch (e2) {
+                    console.warn('Could not load internalBinding.cjs from filesystem, using fallback stub');
+                }
+            }
+
+            if (bindingCode) {
+                // Load actual internalBinding file (60 bindings)
+                const bindingResult = context.evalCode(bindingCode, 'internalBinding.cjs');
+                if (bindingResult.error) {
+                    console.error('Failed to eval internalBinding.cjs:', context.dump(bindingResult.error));
+                    bindingResult.error.dispose();
+                } else {
+                    context.setProp(context.global, 'internalBinding', bindingResult.value);
+                    bindingResult.value.dispose();
+                }
+            } else {
+                // Fallback minimal stub if file not found
+                console.warn('Using minimal internalBinding stub (file not found)');
+                const stubCode = `(function() {
                     const bindings = {
                         fs: {
-                            // Minimal fs binding stub
                             FSReqCallback: function FSReqCallback() {
                                 this.oncomplete = null;
                                 this.context = null;
                             },
                             statValues: new Float64Array(14),
-                        },
-                        constants: {
-                            fs: {
-                                O_RDONLY: 0,
-                                O_WRONLY: 1,
-                                O_RDWR: 2,
-                                O_CREAT: 64,
-                                O_EXCL: 128,
-                                O_TRUNC: 512,
-                                O_APPEND: 1024,
-                                S_IFMT: 61440,
-                                S_IFREG: 32768,
-                                S_IFDIR: 16384,
-                                S_IFLNK: 40960,
-                            }
                         }
                     };
-
                     function internalBinding(name) {
                         if (!bindings.hasOwnProperty(name)) {
                             throw new Error('No such binding: ' + name);
                         }
                         return bindings[name];
                     }
-
-                    internalBinding.bindings = Object.keys(bindings).sort();
                     return internalBinding;
-                })();
-            `;
-
-            const bindingResult = context.evalCode(internalBindingCode, 'internalBinding-init.js');
-            if (bindingResult.error) {
-                console.error('Failed to load internalBinding:', context.dump(bindingResult.error));
-                bindingResult.error.dispose();
-            } else {
-                // Set internalBinding as a global function
-                context.setProp(context.global, 'internalBinding', bindingResult.value);
-                bindingResult.value.dispose();
+                })();`;
+                const stubResult = context.evalCode(stubCode, 'internalBinding-stub.js');
+                if (!stubResult.error) {
+                    context.setProp(context.global, 'internalBinding', stubResult.value);
+                    stubResult.value.dispose();
+                }
             }
         } catch (e) {
             console.error('Error setting up internalBinding:', e);
