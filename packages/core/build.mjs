@@ -77,6 +77,80 @@ const buildOptions = {
       },
     }),
 
+    // Custom plugin for ?raw imports
+    {
+      name: 'raw-loader',
+      setup(build) {
+        build.onResolve({ filter: /\?raw$/ }, args => ({
+          path: path.resolve(args.resolveDir, args.path.replace('?raw', '')),
+          namespace: 'raw-text',
+        }));
+
+        build.onLoad({ filter: /.*/, namespace: 'raw-text' }, async (args) => {
+          const fs = await import('fs/promises');
+          const text = await fs.readFile(args.path, 'utf8');
+          return {
+            contents: `export default ${JSON.stringify(text)}`,
+            loader: 'js',
+          };
+        });
+      },
+    },
+
+    // Custom plugin for import.meta.glob
+    {
+      name: 'glob-loader',
+      setup(build) {
+        build.onLoad({ filter: /builtins\/index\.ts$/ }, async (args) => {
+          const fs = await import('fs/promises');
+
+          const nodeFilesPath = path.join(path.dirname(args.path), 'node');
+
+          // Recursively read all .js files
+          async function readDirRecursive(dir, basePath = '') {
+            const files = {};
+            const entries = await fs.readdir(dir, { withFileTypes: true });
+
+            for (const entry of entries) {
+              const fullPath = path.join(dir, entry.name);
+              const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
+
+              if (entry.isDirectory()) {
+                Object.assign(files, await readDirRecursive(fullPath, relativePath));
+              } else if (entry.name.endsWith('.js')) {
+                files[relativePath] = await fs.readFile(fullPath, 'utf8');
+              }
+            }
+            return files;
+          }
+
+          const fileContents = await readDirRecursive(nodeFilesPath);
+
+          // Read the builtin files directly and inline them
+          const primordialsPath = path.join(path.dirname(args.path), 'primordials.js');
+          const internalBindingPath = path.join(path.dirname(args.path), 'internalBinding.cjs');
+
+          const primordialsContent = await fs.readFile(primordialsPath, 'utf8');
+          const internalBindingContent = await fs.readFile(internalBindingPath, 'utf8');
+
+          // Generate fully static module with all content inlined
+          const contents = `
+export const builtinSources = {
+  'primordials.js': ${JSON.stringify(primordialsContent)},
+  'internalBinding.cjs': ${JSON.stringify(internalBindingContent)}
+};
+
+export const nodeBuiltinSources = ${JSON.stringify(fileContents)};
+          `;
+
+          return {
+            contents,
+            loader: 'ts',
+          };
+        });
+      },
+    },
+
     // Custom plugin for WASM loading
     {
       name: 'wasm-loader',

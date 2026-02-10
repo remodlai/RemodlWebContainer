@@ -13,6 +13,7 @@ import { configure } from '@zenfs/core';
 import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
 import { LibSQLStore } from "./backends/libsql/store";
 import { createClient } from '@libsql/client';
+import { builtinSources, nodeBuiltinSources } from './builtins';
 
 
 interface ProcessEventData {
@@ -384,73 +385,29 @@ export class RemodlWebContainer {
                 log('Created /builtins directory');
             }
 
-            // Import builtin files as raw text
-            // Note: These need to be imported at build time
-            const primordialsContent = await import('./builtins/primordials.js?raw').then(m => m.default).catch(() => null);
-            const internalBindingContent = await import('./builtins/internalBinding.cjs?raw').then(m => m.default).catch(() => null);
+            // Use static imports from builtins index (bundled at build time)
+            fileSystem.writeFile('/builtins/primordials.js', builtinSources['primordials.js']);
+            fileSystem.writeFile('/builtins/internalBinding.cjs', builtinSources['internalBinding.cjs']);
+            log('Copied primordials and internalBinding');
 
-            // Copy primordials.js if available
-            if (primordialsContent) {
-                fileSystem.writeFile('/builtins/primordials.js', primordialsContent);
-                log('Copied primordials.js to /builtins/');
-            } else {
-                log('Warning: primordials.js not available for copying');
-            }
-
-            // Copy internalBinding.cjs if available
-            if (internalBindingContent) {
-                fileSystem.writeFile('/builtins/internalBinding.cjs', internalBindingContent);
-                log('Copied internalBinding.cjs to /builtins/');
-            } else {
-                log('Warning: internalBinding.cjs not available for copying');
-            }
-
-            // Copy ALL Node.js builtin source files using Vite glob imports
-            log('Copying Node.js builtin files using glob imports...');
-
-            // Use Vite's import.meta.glob to import all .js files
-            // @ts-ignore - import.meta.glob is a Vite feature
-            const nodeBuiltins = import.meta.glob?.('./builtins/node/**/*.js', {
-                as: 'raw',
-                eager: true
-            }) || {};
-
-            const builtinPaths = Object.keys(nodeBuiltins);
-            log(`Found ${builtinPaths.length} Node.js builtin files to copy`);
+            // Copy ALL Node.js builtin source files from static imports
+            log('Copying Node.js builtin files...');
 
             let copiedCount = 0;
-            let failedCount = 0;
+            for (const [path, content] of Object.entries(nodeBuiltinSources)) {
+                const targetPath = `/builtins/node/${path}`;
 
-            for (const importPath of builtinPaths) {
-                try {
-                    // Convert import path to filesystem path
-                    // './builtins/node/fs.js' -> 'fs.js'
-                    const relativePath = importPath.replace('./builtins/node/', '');
-                    const targetPath = `/builtins/node/${relativePath}`;
-
-                    // Ensure parent directory exists
-                    const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
-                    if (dirPath && !fileSystem.fileExists(dirPath)) {
-                        fileSystem.createDirectory(dirPath);
-                    }
-
-                    // Get content from glob import
-                    const content = nodeBuiltins[importPath];
-
-                    if (content) {
-                        fileSystem.writeFile(targetPath, content);
-                        copiedCount++;
-                    } else {
-                        log(`Warning: No content for ${relativePath}`);
-                        failedCount++;
-                    }
-                } catch (e) {
-                    log(`Warning: Failed to copy ${importPath}:`, e);
-                    failedCount++;
+                // Ensure parent directory exists
+                const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
+                if (dirPath && !fileSystem.fileExists(dirPath)) {
+                    fileSystem.createDirectory(dirPath);
                 }
+
+                fileSystem.writeFile(targetPath, content);
+                copiedCount++;
             }
 
-            log(`Copied ${copiedCount} Node.js builtin files (${failedCount} failed)`);
+            log(`Copied ${copiedCount} Node.js builtin files`);
         } catch (error) {
             log('Error copying builtin files:', error);
             // Non-fatal - will fall back to stubs
