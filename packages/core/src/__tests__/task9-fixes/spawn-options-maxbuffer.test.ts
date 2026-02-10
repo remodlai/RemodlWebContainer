@@ -4,8 +4,6 @@
  * Verifies that the maxBuffer property exists on SpawnOptions and is properly typed.
  */
 
-import { describe, test, expect } from '@jest/globals';
-
 // Extended SpawnOptions with maxBuffer
 interface SpawnOptions {
   cwd?: string;

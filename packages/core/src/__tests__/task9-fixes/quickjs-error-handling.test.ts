@@ -5,8 +5,6 @@
  * and that errors are properly disposed.
  */
 
-import { describe, test, expect, beforeEach } from '@jest/globals';
-
 // Mock QuickJS types for testing
 type QuickJSHandle = { id: number };
 
@@ -64,8 +62,8 @@ describe('Task #9 Fix: QuickJS Error Handling', () => {
         expect(mockResult.error.message).toBe('Compilation failed');
         expect(mockResult.value).toBeUndefined();
       } else {
-        // Should not reach here
-        expect(mockResult.value).toBeDefined();
+        // Should not reach here for this test case
+        fail('Should not reach else branch with error present');
       }
     });
 
