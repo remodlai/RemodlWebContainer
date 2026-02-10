@@ -30,6 +30,7 @@ interface SpawnOptions {
   windowsHide?: boolean;
   timeout?: number;
   killSignal?: string | number;
+  maxBuffer?: number;
 }
 
 export class ChildProcess extends EventEmitter {
@@ -246,7 +247,7 @@ export function exec(
     execCallback = callback;
   }
 
-  const child = spawn(execOptions.shell || '/bin/sh', ['-c', command], execOptions);
+  const child = spawn(typeof execOptions.shell === 'string' ? execOptions.shell : '/bin/sh', ['-c', command], execOptions);
 
   let stdout = '';
   let stderr = '';

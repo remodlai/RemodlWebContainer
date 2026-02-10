@@ -12,6 +12,7 @@
 		"build:esbuild:analyze": "NODE_ENV=production node build.mjs --analyze",
 		"build:worker": "mkdir -p src/generated && BUILD_TARGET=worker tsup",
 		"build:main": "tsup",
+		"prebuild": "node ../../scripts/generate-builtin-bundle.mjs",
 		"build": "pnpm build:esbuild && pnpm build:worker && pnpm build:main",
 		"postbuild": "cp node_modules/@jitl/quickjs-ng-wasmfile-release-asyncify/dist/emscripten-module.wasm dist/",
 		"clean": "rimraf dist",

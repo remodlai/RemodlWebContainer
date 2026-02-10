@@ -91,37 +91,37 @@ export function resolve6(hostname: string, options: any, callback?: DnsCallback<
 
 export function resolveMx(hostname: string, callback: DnsCallback<any[]>): void {
   dnsRequest('resolveMx', { hostname })
-    .then(result => callback(null, result))
+    .then((result: any[]) => callback(null, result))
     .catch(err => callback(err));
 }
 
 export function resolveTxt(hostname: string, callback: DnsCallback<string[][]>): void {
   dnsRequest('resolveTxt', { hostname })
-    .then(result => callback(null, result))
+    .then((result: string[][]) => callback(null, result))
     .catch(err => callback(err));
 }
 
 export function resolveSrv(hostname: string, callback: DnsCallback<any[]>): void {
   dnsRequest('resolveSrv', { hostname })
-    .then(result => callback(null, result))
+    .then((result: any[]) => callback(null, result))
     .catch(err => callback(err));
 }
 
 export function resolveNs(hostname: string, callback: DnsCallback<string[]>): void {
   dnsRequest('resolveNs', { hostname })
-    .then(result => callback(null, result))
+    .then((result: string[]) => callback(null, result))
     .catch(err => callback(err));
 }
 
 export function resolveCname(hostname: string, callback: DnsCallback<string[]>): void {
   dnsRequest('resolveCname', { hostname })
-    .then(result => callback(null, result))
+    .then((result: string[]) => callback(null, result))
     .catch(err => callback(err));
 }
 
 export function reverse(ip: string, callback: DnsCallback<string[]>): void {
   dnsRequest('reverse', { ip })
-    .then(result => callback(null, result))
+    .then((result: string[]) => callback(null, result))
     .catch(err => callback(err));
 }
 

@@ -33,6 +33,11 @@ async function testPolyfills() {
       globalThis.Buffer = require('buffer').Buffer;
       'setup complete';
     `);
+    if (setupResult.error) {
+      console.error('Error:', setupResult.error);
+      setupResult.error.dispose();
+      return;
+    }
     console.log('   Result:', vm.dump(setupResult.value));
     setupResult.value.dispose();
 

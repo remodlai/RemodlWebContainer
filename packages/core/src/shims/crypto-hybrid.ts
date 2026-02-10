@@ -7,6 +7,8 @@
  * - Use Web Crypto for random number generation (crypto.getRandomValues)
  */
 
+declare module 'crypto-browserify';
+
 import * as cryptoBrowserify from 'crypto-browserify';
 import { Buffer } from 'buffer';
 
