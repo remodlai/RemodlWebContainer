@@ -351,8 +351,6 @@ export function spawnSync(): never {
   throw new Error('spawnSync not supported in browser. Use spawn() with async/await.');
 }
 
-export { ChildProcess };
-
 export default {
   spawn,
   exec,

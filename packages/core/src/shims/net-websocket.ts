@@ -468,8 +468,6 @@ export function isIPv6(input: string): boolean {
   return /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(input);
 }
 
-export { Socket, Server };
-
 export default {
   Socket,
   Server,
