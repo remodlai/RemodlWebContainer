@@ -72,15 +72,18 @@ export class NodeProcess extends Process {
             this.context = context;
             this.networkModule = new NetworkModule(context,(port:number)=>{
                 console.log('registering server',port)
-                
+
                 this.networkManager.registerServer(this.pid, port, 'http', { host: '0.0.0.0' })
             }, (port: number) => {
                 this.networkManager.unregisterServer(port, 'http')
             }, true);
             this.httpModule =this.networkModule.createHttpModule()
-            
+
             // this.context = context;
             this.setupRequire(context);
+
+            // Inject Node.js internal globals (primordials and internalBinding)
+            this.setupNodeInternals(context);
 
             // Set up console.log and other console methods
             const consoleObj = context.newObject();
@@ -181,14 +184,14 @@ export class NodeProcess extends Process {
         const requireFn = context.newFunction("require", (moduleId) => {
             const id = context.getString(moduleId)
 
-            
+
             // patching http module
             if(context.getString(moduleId)==='http'&&this.networkModule){
                 this.httpModule = this.networkModule.createHttpModule()
                 return this.httpModule.dup()
             }
-            
-            
+
+
             // If not a built-in module, try to load as a regular module
             try {
                 // Convert the require path to a module path
@@ -241,6 +244,131 @@ export class NodeProcess extends Process {
         context.setProp(context.global, "exports", exportsObj)
         moduleObj.dispose()
         exportsObj.dispose()
+    }
+
+    private setupNodeInternals(context: QuickJSContext) {
+        // Load and inject primordials as a global
+        // Primordials provide frozen versions of built-in prototypes/functions
+        try {
+            const primordialsCode = `
+                // Load primordials from builtins
+                // This must be done before any Node.js internal modules are loaded
+                (function() {
+                    try {
+                        // For now, create a minimal primordials stub
+                        // Full implementation will be loaded from builtins/primordials.cjs
+                        const primordials = {
+                            // Array methods
+                            ArrayIsArray: Array.isArray.bind(Array),
+                            ArrayPrototypePush: Array.prototype.push,
+                            ArrayPrototypeSlice: Array.prototype.slice,
+
+                            // Object methods
+                            ObjectDefineProperty: Object.defineProperty.bind(Object),
+                            ObjectKeys: Object.keys.bind(Object),
+                            ObjectPrototypeHasOwnProperty: Object.prototype.hasOwnProperty,
+
+                            // Function methods
+                            FunctionPrototypeCall: Function.prototype.call,
+                            FunctionPrototypeBind: Function.prototype.bind,
+
+                            // String methods
+                            StringPrototypeSlice: String.prototype.slice,
+                            StringPrototypeIndexOf: String.prototype.indexOf,
+
+                            // Number/Math
+                            NumberIsNaN: Number.isNaN.bind(Number),
+                            MathMax: Math.max.bind(Math),
+                            MathMin: Math.min.bind(Math),
+
+                            // Promise
+                            Promise: Promise,
+                            PromiseResolve: Promise.resolve.bind(Promise),
+
+                            // Symbol
+                            Symbol: Symbol,
+                            SymbolFor: Symbol.for.bind(Symbol),
+                        };
+
+                        // Freeze primordials to prevent modification
+                        Object.freeze(primordials);
+                        return primordials;
+                    } catch (e) {
+                        console.error('Failed to create primordials:', e);
+                        return {};
+                    }
+                })();
+            `;
+
+            const primordialsResult = context.evalCode(primordialsCode, 'primordials-init.js');
+            if (primordialsResult.error) {
+                console.error('Failed to load primordials:', context.dump(primordialsResult.error));
+                primordialsResult.error.dispose();
+            } else {
+                // Set primordials as a global
+                context.setProp(context.global, 'primordials', primordialsResult.value);
+                primordialsResult.value.dispose();
+            }
+        } catch (e) {
+            console.error('Error setting up primordials:', e);
+        }
+
+        // Load and inject internalBinding as a global function
+        try {
+            const internalBindingCode = `
+                // Create internalBinding function
+                (function() {
+                    // Stub implementation - will be replaced with actual builtins/internalBinding.cjs
+                    const bindings = {
+                        fs: {
+                            // Minimal fs binding stub
+                            FSReqCallback: function FSReqCallback() {
+                                this.oncomplete = null;
+                                this.context = null;
+                            },
+                            statValues: new Float64Array(14),
+                        },
+                        constants: {
+                            fs: {
+                                O_RDONLY: 0,
+                                O_WRONLY: 1,
+                                O_RDWR: 2,
+                                O_CREAT: 64,
+                                O_EXCL: 128,
+                                O_TRUNC: 512,
+                                O_APPEND: 1024,
+                                S_IFMT: 61440,
+                                S_IFREG: 32768,
+                                S_IFDIR: 16384,
+                                S_IFLNK: 40960,
+                            }
+                        }
+                    };
+
+                    function internalBinding(name) {
+                        if (!bindings.hasOwnProperty(name)) {
+                            throw new Error('No such binding: ' + name);
+                        }
+                        return bindings[name];
+                    }
+
+                    internalBinding.bindings = Object.keys(bindings).sort();
+                    return internalBinding;
+                })();
+            `;
+
+            const bindingResult = context.evalCode(internalBindingCode, 'internalBinding-init.js');
+            if (bindingResult.error) {
+                console.error('Failed to load internalBinding:', context.dump(bindingResult.error));
+                bindingResult.error.dispose();
+            } else {
+                // Set internalBinding as a global function
+                context.setProp(context.global, 'internalBinding', bindingResult.value);
+                bindingResult.value.dispose();
+            }
+        } catch (e) {
+            console.error('Error setting up internalBinding:', e);
+        }
     }
 
     async handleHttpRequest(request: HostRequest): Promise<Response> {
