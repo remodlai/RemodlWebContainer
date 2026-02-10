@@ -223,8 +223,13 @@ export class RemodlWebContainer {
             return await RemodlWebContainer.initializeLibSQLFilesystem(options.filesystem, log);
         } else {
             log('Using default in-memory ZenFS');
+            const fileSystem = new ZenFSCore();
+
+            // Copy builtin files even in default mode
+            await RemodlWebContainer.copyBuiltinFiles(fileSystem, log);
+
             return {
-                fileSystem: new ZenFSCore(),
+                fileSystem,
                 agentWorkspaceReady: false, // No agent workspace in default mode
             };
         }
@@ -310,6 +315,9 @@ export class RemodlWebContainer {
             // Ensure agent workspace directories exist
             await RemodlWebContainer.ensureAgentWorkspaceStructure(fileSystem, log);
 
+            // Copy builtin files to ZenFS
+            await RemodlWebContainer.copyBuiltinFiles(fileSystem, log);
+
             log('libSQL filesystem initialization complete');
 
             return {
@@ -359,6 +367,46 @@ export class RemodlWebContainer {
                 // Directory might already exist
                 log(`Directory already exists or error: ${dir}`);
             }
+        }
+    }
+
+    /**
+     * Copy Node.js builtin files to ZenFS for runtime access
+     */
+    private static async copyBuiltinFiles(
+        fileSystem: IFileSystem,
+        log: (...args: any[]) => void
+    ): Promise<void> {
+        try {
+            // Create /builtins directory
+            if (!fileSystem.fileExists('/builtins')) {
+                fileSystem.createDirectory('/builtins');
+                log('Created /builtins directory');
+            }
+
+            // Import builtin files as raw text
+            // Note: These need to be imported at build time
+            const primordialsContent = await import('./builtins/primordials.js?raw').then(m => m.default).catch(() => null);
+            const internalBindingContent = await import('./builtins/internalBinding.cjs?raw').then(m => m.default).catch(() => null);
+
+            // Copy primordials.js if available
+            if (primordialsContent) {
+                fileSystem.writeFile('/builtins/primordials.js', primordialsContent);
+                log('Copied primordials.js to /builtins/');
+            } else {
+                log('Warning: primordials.js not available for copying');
+            }
+
+            // Copy internalBinding.cjs if available
+            if (internalBindingContent) {
+                fileSystem.writeFile('/builtins/internalBinding.cjs', internalBindingContent);
+                log('Copied internalBinding.cjs to /builtins/');
+            } else {
+                log('Warning: internalBinding.cjs not available for copying');
+            }
+        } catch (error) {
+            log('Error copying builtin files:', error);
+            // Non-fatal - will fall back to stubs
         }
     }
 
