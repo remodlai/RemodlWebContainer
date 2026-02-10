@@ -247,108 +247,37 @@ export class NodeProcess extends Process {
     }
 
     private setupNodeInternals(context: QuickJSContext) {
-        // Load and inject primordials from actual builtin file
-        try {
-            // Try to load from /builtins/primordials.cjs first
-            let primordialsCode: string | undefined;
-            try {
-                primordialsCode = this.fileSystem.readFile('/builtins/primordials.cjs');
-            } catch (e) {
-                // Fallback: try without leading slash
-                try {
-                    primordialsCode = this.fileSystem.readFile('builtins/primordials.cjs');
-                } catch (e2) {
-                    console.warn('Could not load primordials.cjs from filesystem, using fallback stub');
-                }
-            }
-
-            if (primordialsCode) {
-                // Load actual primordials file (200+ primordials)
-                const primordialsResult = context.evalCode(primordialsCode, 'primordials.cjs');
-                if (primordialsResult.error) {
-                    console.error('Failed to eval primordials.cjs:', context.dump(primordialsResult.error));
-                    primordialsResult.error.dispose();
-                } else {
-                    context.setProp(context.global, 'primordials', primordialsResult.value);
-                    primordialsResult.value.dispose();
-                }
-            } else {
-                // Fallback minimal stub if file not found
-                console.warn('Using minimal primordials stub (file not found)');
-                const stubCode = `(function() {
-                    const primordials = {
-                        ArrayIsArray: Array.isArray.bind(Array),
-                        ObjectKeys: Object.keys.bind(Object),
-                        Promise: Promise,
-                    };
-                    Object.freeze(primordials);
-                    return primordials;
-                })();`;
-                const stubResult = context.evalCode(stubCode, 'primordials-stub.js');
-                if (!stubResult.error) {
-                    context.setProp(context.global, 'primordials', stubResult.value);
-                    stubResult.value.dispose();
-                }
-            }
-        } catch (e) {
-            console.error('Error setting up primordials:', e);
+        // Load primordials from actual builtin file - NO STUBS ALLOWED
+        const primordialsCode = this.fileSystem.readFile('/builtins/primordials.js');
+        if (!primordialsCode) {
+            throw new Error('CRITICAL: /builtins/primordials.js not found in filesystem. Builtin files must be provisioned during container initialization.');
         }
 
-        // Load and inject internalBinding from actual builtin file
-        try {
-            // Try to load from /builtins/internalBinding.cjs first
-            let bindingCode: string | undefined;
-            try {
-                bindingCode = this.fileSystem.readFile('/builtins/internalBinding.cjs');
-            } catch (e) {
-                // Fallback: try without leading slash
-                try {
-                    bindingCode = this.fileSystem.readFile('builtins/internalBinding.cjs');
-                } catch (e2) {
-                    console.warn('Could not load internalBinding.cjs from filesystem, using fallback stub');
-                }
-            }
-
-            if (bindingCode) {
-                // Load actual internalBinding file (60 bindings)
-                const bindingResult = context.evalCode(bindingCode, 'internalBinding.cjs');
-                if (bindingResult.error) {
-                    console.error('Failed to eval internalBinding.cjs:', context.dump(bindingResult.error));
-                    bindingResult.error.dispose();
-                } else {
-                    context.setProp(context.global, 'internalBinding', bindingResult.value);
-                    bindingResult.value.dispose();
-                }
-            } else {
-                // Fallback minimal stub if file not found
-                console.warn('Using minimal internalBinding stub (file not found)');
-                const stubCode = `(function() {
-                    const bindings = {
-                        fs: {
-                            FSReqCallback: function FSReqCallback() {
-                                this.oncomplete = null;
-                                this.context = null;
-                            },
-                            statValues: new Float64Array(14),
-                        }
-                    };
-                    function internalBinding(name) {
-                        if (!bindings.hasOwnProperty(name)) {
-                            throw new Error('No such binding: ' + name);
-                        }
-                        return bindings[name];
-                    }
-                    return internalBinding;
-                })();`;
-                const stubResult = context.evalCode(stubCode, 'internalBinding-stub.js');
-                if (!stubResult.error) {
-                    context.setProp(context.global, 'internalBinding', stubResult.value);
-                    stubResult.value.dispose();
-                }
-            }
-        } catch (e) {
-            console.error('Error setting up internalBinding:', e);
+        const primordialsResult = context.evalCode(primordialsCode, 'primordials.js');
+        if (primordialsResult.error) {
+            const error = context.dump(primordialsResult.error);
+            primordialsResult.error.dispose();
+            throw new Error(`Failed to evaluate primordials.js: ${error}`);
         }
+
+        context.setProp(context.global, 'primordials', primordialsResult.value);
+        primordialsResult.value.dispose();
+
+        // Load internalBinding from actual builtin file - NO STUBS ALLOWED
+        const bindingCode = this.fileSystem.readFile('/builtins/internalBinding.cjs');
+        if (!bindingCode) {
+            throw new Error('CRITICAL: /builtins/internalBinding.cjs not found in filesystem. Builtin files must be provisioned during container initialization.');
+        }
+
+        const bindingResult = context.evalCode(bindingCode, 'internalBinding.cjs');
+        if (bindingResult.error) {
+            const error = context.dump(bindingResult.error);
+            bindingResult.error.dispose();
+            throw new Error(`Failed to evaluate internalBinding.cjs: ${error}`);
+        }
+
+        context.setProp(context.global, 'internalBinding', bindingResult.value);
+        bindingResult.value.dispose();
     }
 
     async handleHttpRequest(request: HostRequest): Promise<Response> {
