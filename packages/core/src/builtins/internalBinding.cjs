@@ -186,23 +186,485 @@ const bindings = {
   },
 
   // === Filesystem ===
-  fs: {
-    // Implemented via libSQL/ZenFS backend
-    // Placeholder - actual implementation in fs-webcontainer.ts
-    open() {},
-    close() {},
-    read() {},
-    write() {},
-    stat() {},
-    lstat() {},
-    fstat() {},
-    readdir() {},
-    mkdir() {},
-    rmdir() {},
-    unlink() {},
-    rename() {},
-    // Add more as needed
-  },
+  fs: (() => {
+    // Import ZenFS at module scope
+    // Note: This will be available after configure() is called
+    let zenfs;
+    try {
+      zenfs = require('@zenfs/core').fs;
+    } catch (e) {
+      // ZenFS not yet configured, will be set later
+      zenfs = null;
+    }
+
+    // Helper: Get ZenFS instance
+    const getFS = () => {
+      if (!zenfs) {
+        try {
+          zenfs = require('@zenfs/core').fs;
+        } catch (e) {
+          throw new Error('ZenFS not configured. Call configure() first.');
+        }
+      }
+      return zenfs;
+    };
+
+    // FSReqCallback class for async operations
+    class FSReqCallback {
+      constructor() {
+        this.oncomplete = null;
+        this.context = null;
+      }
+    }
+
+    // Stats values array (used by Node.js fs.Stats)
+    // [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs]
+    const statValues = new Float64Array(14);
+
+    // Helper: Convert ZenFS stats to statValues array
+    const fillStatValues = (stats) => {
+      statValues[0] = stats.dev || 0;
+      statValues[1] = stats.mode || 0;
+      statValues[2] = stats.nlink || 1;
+      statValues[3] = stats.uid || 0;
+      statValues[4] = stats.gid || 0;
+      statValues[5] = stats.rdev || 0;
+      statValues[6] = stats.blksize || 4096;
+      statValues[7] = stats.ino || 0;
+      statValues[8] = stats.size || 0;
+      statValues[9] = stats.blocks || 0;
+      statValues[10] = stats.atimeMs || Date.now();
+      statValues[11] = stats.mtimeMs || Date.now();
+      statValues[12] = stats.ctimeMs || Date.now();
+      statValues[13] = stats.birthtimeMs || Date.now();
+      return statValues;
+    };
+
+    // Helper: Execute async operation with req callback
+    const asyncOp = (fn, req) => {
+      if (req && req.oncomplete) {
+        try {
+          const result = fn();
+          // Call oncomplete asynchronously
+          setImmediate(() => {
+            req.oncomplete(null, result);
+          });
+        } catch (err) {
+          setImmediate(() => {
+            req.oncomplete(err);
+          });
+        }
+      } else {
+        // Sync operation
+        return fn();
+      }
+    };
+
+    return {
+      // === Special Exports ===
+      FSReqCallback,
+      statValues,
+
+      // === File Operations ===
+
+      // open(path, flags, mode, req?)
+      open(path, flags, mode, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.openSync(path, flags, mode);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // close(fd, req?)
+      close(fd, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.closeSync(fd);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // read(fd, buffer, offset, length, position, req?)
+      read(fd, buffer, offset, length, position, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.readSync(fd, buffer, offset, length, position);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // write(fd, buffer, offset, length, position, req?)
+      write(fd, buffer, offset, length, position, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.writeSync(fd, buffer, offset, length, position);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // writeBuffer(fd, buffer, offset, length, position, req?)
+      writeBuffer(fd, buffer, offset, length, position, req) {
+        // Alias for write
+        return this.write(fd, buffer, offset, length, position, req);
+      },
+
+      // writeString(fd, string, position, encoding, req?)
+      writeString(fd, string, position, encoding, req) {
+        const fs = getFS();
+        const operation = () => {
+          const buffer = Buffer.from(string, encoding);
+          return fs.writeSync(fd, buffer, 0, buffer.length, position);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Stat Operations ===
+
+      // stat(path, useBigint, req?)
+      stat(path, useBigint, req) {
+        const fs = getFS();
+        const operation = () => {
+          const stats = fs.statSync(path);
+          return fillStatValues(stats);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // lstat(path, useBigint, req?)
+      lstat(path, useBigint, req) {
+        const fs = getFS();
+        const operation = () => {
+          const stats = fs.lstatSync(path);
+          return fillStatValues(stats);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // fstat(fd, useBigint, req?)
+      fstat(fd, useBigint, req) {
+        const fs = getFS();
+        const operation = () => {
+          const stats = fs.fstatSync(fd);
+          return fillStatValues(stats);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // internalModuleStat(path) - Special sync stat for module loading
+      internalModuleStat(path) {
+        const fs = getFS();
+        try {
+          const stats = fs.statSync(path);
+          if (stats.isFile()) return 0;
+          if (stats.isDirectory()) return 1;
+          return -1;
+        } catch (e) {
+          return -1; // File doesn't exist
+        }
+      },
+
+      // === Directory Operations ===
+
+      // mkdir(path, mode, recursive, req?)
+      mkdir(path, mode, recursive, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.mkdirSync(path, { mode, recursive });
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // rmdir(path, req?)
+      rmdir(path, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.rmdirSync(path);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // readdir(path, encoding, withFileTypes, req?)
+      readdir(path, encoding, withFileTypes, req) {
+        const fs = getFS();
+        const operation = () => {
+          const options = { encoding, withFileTypes };
+          return fs.readdirSync(path, options);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === File Manipulation ===
+
+      // unlink(path, req?)
+      unlink(path, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.unlinkSync(path);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // rename(oldPath, newPath, req?)
+      rename(oldPath, newPath, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.renameSync(oldPath, newPath);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // link(existingPath, newPath, req?)
+      link(existingPath, newPath, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.linkSync(existingPath, newPath);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // symlink(target, path, type, req?)
+      symlink(target, path, type, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.symlinkSync(target, path, type);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // readlink(path, encoding, req?)
+      readlink(path, encoding, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.readlinkSync(path, encoding);
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Permission & Attributes ===
+
+      // chmod(path, mode, req?)
+      chmod(path, mode, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.chmodSync(path, mode);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // fchmod(fd, mode, req?)
+      fchmod(fd, mode, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.fchmodSync(fd, mode);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // chown(path, uid, gid, req?)
+      chown(path, uid, gid, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.chownSync(path, uid, gid);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // fchown(fd, uid, gid, req?)
+      fchown(fd, uid, gid, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.fchownSync(fd, uid, gid);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // lchown(path, uid, gid, req?)
+      lchown(path, uid, gid, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.lchownSync(path, uid, gid);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Timestamps ===
+
+      // utimes(path, atime, mtime, req?)
+      utimes(path, atime, mtime, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.utimesSync(path, atime, mtime);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // futimes(fd, atime, mtime, req?)
+      futimes(fd, atime, mtime, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.futimesSync(fd, atime, mtime);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // lutimes(path, atime, mtime, req?)
+      lutimes(path, atime, mtime, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.lutimesSync(path, atime, mtime);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === File Content ===
+
+      // truncate(path, length, req?)
+      truncate(path, length, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.truncateSync(path, length);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // ftruncate(fd, length, req?)
+      ftruncate(fd, length, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.ftruncateSync(fd, length);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Existence & Access ===
+
+      // access(path, mode, req?)
+      access(path, mode, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.accessSync(path, mode);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // exists(path, req?) - Deprecated but still used
+      exists(path, req) {
+        const fs = getFS();
+        const operation = () => {
+          try {
+            fs.accessSync(path);
+            return true;
+          } catch (e) {
+            return false;
+          }
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Realpath ===
+
+      // realpath(path, encoding, req?)
+      realpath(path, encoding, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.realpathSync(path, { encoding });
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Sync Operations ===
+
+      // fsync(fd, req?)
+      fsync(fd, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.fsyncSync(fd);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // fdatasync(fd, req?)
+      fdatasync(fd, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.fdatasyncSync(fd);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Copy ===
+
+      // copyFile(src, dest, mode, req?)
+      copyFile(src, dest, mode, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.copyFileSync(src, dest, mode);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // === Optimized Reads ===
+
+      // readFileUtf8(path, flags) - Optimized UTF-8 read
+      readFileUtf8(path, flags) {
+        const fs = getFS();
+        return fs.readFileSync(path, 'utf-8');
+      },
+
+      // === Other ===
+
+      // mkdtemp(prefix, encoding, req?)
+      mkdtemp(prefix, encoding, req) {
+        const fs = getFS();
+        const operation = () => {
+          return fs.mkdtempSync(prefix, { encoding });
+        };
+        return asyncOp(operation, req);
+      },
+
+      // rm(path, options, req?)
+      rm(path, options, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.rmSync(path, options);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+
+      // cp(src, dest, options, req?)
+      cp(src, dest, options, req) {
+        const fs = getFS();
+        const operation = () => {
+          fs.cpSync(src, dest, options);
+          return undefined;
+        };
+        return asyncOp(operation, req);
+      },
+    };
+  })(),
 
   fs_dir: {
     // Directory operations
