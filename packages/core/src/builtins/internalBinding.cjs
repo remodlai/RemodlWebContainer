@@ -217,9 +217,15 @@ const bindings = {
       }
     }
 
-    // Stats values array (used by Node.js fs.Stats)
-    // [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs]
-    const statValues = new Float64Array(14);
+    // Stats values arrays (used by Node.js fs.Stats)
+    // 18 fields × 2 slots each = 36 total
+    // Fields: dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks,
+    //         atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, birthtime
+    const kFsStatsFieldsNumber = 18;
+    const statValues = new Float64Array(36);  // 18 fields × 2 slots
+    const bigintStatValues = new BigInt64Array(36);
+    const statFsValues = new Float64Array(14);  // For statfs()
+    const bigintStatFsValues = new BigInt64Array(14);
 
     // Helper: Convert ZenFS stats to statValues array
     const fillStatValues = (stats) => {
@@ -264,6 +270,10 @@ const bindings = {
       // === Special Exports ===
       FSReqCallback,
       statValues,
+      bigintStatValues,
+      statFsValues,
+      bigintStatFsValues,
+      kFsStatsFieldsNumber,
 
       // === File Operations ===
 
