@@ -13,6 +13,7 @@ import { configure } from '@zenfs/core';
 import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
 import { LibSQLStore } from "./backends/libsql/store";
 import { createClient } from '@libsql/client';
+import { NODE_BUILTINS_MANIFEST } from './builtins/node-builtins-manifest';
 
 
 interface ProcessEventData {
@@ -404,6 +405,42 @@ export class RemodlWebContainer {
             } else {
                 log('Warning: internalBinding.cjs not available for copying');
             }
+
+            // Copy Node.js builtin source files
+            log(`Copying ${NODE_BUILTINS_MANIFEST.length} Node.js builtin files...`);
+
+            // Create necessary directories
+            fileSystem.createDirectory('/builtins/node');
+            fileSystem.createDirectory('/builtins/node/internal');
+
+            let copiedCount = 0;
+            let failedCount = 0;
+
+            for (const file of NODE_BUILTINS_MANIFEST) {
+                try {
+                    // Ensure subdirectories exist
+                    const dirPath = file.substring(0, file.lastIndexOf('/'));
+                    if (dirPath && !fileSystem.fileExists(`/builtins/node/${dirPath}`)) {
+                        fileSystem.createDirectory(`/builtins/node/${dirPath}`);
+                    }
+
+                    // Import file with ?raw suffix
+                    const content = await import(`./builtins/node/${file}?raw`).then(m => m.default);
+
+                    if (content) {
+                        fileSystem.writeFile(`/builtins/node/${file}`, content);
+                        copiedCount++;
+                    } else {
+                        log(`Warning: Could not import ${file}`);
+                        failedCount++;
+                    }
+                } catch (e) {
+                    log(`Warning: Failed to copy ${file}:`, e);
+                    failedCount++;
+                }
+            }
+
+            log(`Copied ${copiedCount}/${NODE_BUILTINS_MANIFEST.length} Node.js builtin files (${failedCount} failed)`);
         } catch (error) {
             log('Error copying builtin files:', error);
             // Non-fatal - will fall back to stubs
