@@ -1,7 +1,7 @@
 import { ServerType } from '../../../network/types';
 import { IFileSystem } from '../../../filesystem';
 import { Process, ProcessEvent, ProcessState, ProcessType } from '../../base';
-import {  QuickJSContext, QuickJSHandle, newQuickJSAsyncWASMModuleFromVariant } from 'quickjs-emscripten';
+import {  QuickJSContext, QuickJSHandle, newQuickJSAsyncWASMModuleFromVariant, newVariant } from 'quickjs-emscripten';
 import { NetworkManager } from '../../../network/manager';
 // Previous variants (standard QuickJS, now replaced with custom QuickJS-ng)
 // import variant from "@jitl/quickjs-singlefile-browser-release-sync"
@@ -36,7 +36,18 @@ export class NodeProcess extends Process {
 
     async execute(): Promise<void> {
         try {
-            const QuickJS = await newQuickJSAsyncWASMModuleFromVariant(variant)
+            // Configure WASM file location using newVariant() API
+            const customVariant = newVariant(variant, {
+                locateFile: (fileName: string, prefix: string) => {
+                    if (fileName.endsWith('.wasm')) {
+                        // WASM file is served from playground/public/ at root path
+                        return '/emscripten-module.wasm';
+                    }
+                    return prefix + fileName;
+                }
+            });
+
+            const QuickJS = await newQuickJSAsyncWASMModuleFromVariant(customVariant)
 
             const runtime = QuickJS.newRuntime();
             // Set up module loader
@@ -165,16 +176,21 @@ export class NodeProcess extends Process {
             } catch (error) {
                 this._exitCode = 1;
                 this._state = ProcessState.FAILED;
-                this.emit(ProcessEvent.MESSAGE, { stderr: JSON.stringify(error, null, 2) });
+                const errorMessage = typeof error === 'string' ? error : JSON.stringify(error, null, 2);
+                this.emit(ProcessEvent.MESSAGE, { stderr: errorMessage });
             } finally {
                 context.dispose();
                 // runtime.;
                 this.emit(ProcessEvent.EXIT, { pid: this.pid, exitCode: this._exitCode });
             }
         } catch (error: any) {
+            console.error('[NodeProcess] Execution failed:', error);
+            console.error('[NodeProcess] Error type:', typeof error);
+            console.error('[NodeProcess] Error details:', JSON.stringify(error, null, 2));
             this._state = ProcessState.FAILED;
             this._exitCode = 1;
-            this.emit(ProcessEvent.ERROR, { pid: this.pid, error:JSON.stringify(error,null,2) });
+            const errorMessage = typeof error === 'string' ? error : JSON.stringify(error, null, 2);
+            this.emit(ProcessEvent.ERROR, { pid: this.pid, error: errorMessage });
             this.emit(ProcessEvent.EXIT, { pid: this.pid, exitCode: this._exitCode });
         }
     }

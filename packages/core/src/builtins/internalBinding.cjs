@@ -643,6 +643,56 @@ const bindings = {
         return fs.readFileSync(path, 'utf-8');
       },
 
+      // readFile(path, options, req?)
+      readFile(path, options, req) {
+        const fs = getFS();
+        const operation = () => {
+          const fd = fs.openSync(path, 'r');
+          try {
+            const stat = fs.statSync(path);
+            const buffer = Buffer.allocUnsafe(stat.size);
+            fs.readSync(fd, buffer, 0, stat.size, 0);
+            const result = options?.encoding ? buffer.toString(options.encoding) : buffer;
+            return result;
+          } finally {
+            fs.closeSync(fd);
+          }
+        };
+        return asyncOp(operation, req);
+      },
+
+      // writeFile(path, data, options, req?)
+      writeFile(path, data, options, req) {
+        const fs = getFS();
+        const operation = () => {
+          const fd = fs.openSync(path, 'w', options?.mode || 0o666);
+          try {
+            const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, options?.encoding || 'utf8');
+            fs.writeSync(fd, buffer, 0, buffer.length, 0);
+            return undefined;
+          } finally {
+            fs.closeSync(fd);
+          }
+        };
+        return asyncOp(operation, req);
+      },
+
+      // appendFile(path, data, options, req?)
+      appendFile(path, data, options, req) {
+        const fs = getFS();
+        const operation = () => {
+          const fd = fs.openSync(path, 'a', options?.mode || 0o666);
+          try {
+            const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, options?.encoding || 'utf8');
+            fs.writeSync(fd, buffer, 0, buffer.length);
+            return undefined;
+          } finally {
+            fs.closeSync(fd);
+          }
+        };
+        return asyncOp(operation, req);
+      },
+
       // === Other ===
 
       // mkdtemp(prefix, encoding, req?)

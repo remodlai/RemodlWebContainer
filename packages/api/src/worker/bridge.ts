@@ -14,7 +14,6 @@ interface PendingRequest {
     reject: (error: Error) => void;
     timeout: number;
 }
-import workerCode from '@remodl-web-container/core/worker-code';
 
 export class WorkerBridge {
     private worker: Worker|undefined;
@@ -114,12 +113,10 @@ export class WorkerBridge {
     // Helper functions
     private async boot() {
         try {
-            // Import the worker code
-            
-
-            // Create and initialize worker
-            const blob = new Blob([workerCode], { type: 'text/javascript' });
-            this.worker = new Worker(URL.createObjectURL(blob));
+            // Use real worker file URL instead of blob to preserve URL context
+            // Blob workers have no URL, which breaks import.meta.url resolution needed for QuickJS WASM loading
+            const workerUrl = new URL('@remodl-web-container/core/dist/worker.global.js', import.meta.url);
+            this.worker = new Worker(workerUrl, { type: 'module' });
 
             // Set up message handling
             this.setupMessageHandler();

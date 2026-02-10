@@ -13,6 +13,7 @@
 		"build:worker": "mkdir -p src/generated && BUILD_TARGET=worker tsup",
 		"build:main": "tsup",
 		"build": "pnpm build:esbuild && pnpm build:worker && pnpm build:main",
+		"postbuild": "cp node_modules/@jitl/quickjs-ng-wasmfile-release-asyncify/dist/emscripten-module.wasm dist/",
 		"clean": "rimraf dist",
 		"dev": "tsc --project tsconfig.json --watch",
 		"test": "jest",
@@ -40,13 +41,14 @@
 		"./worker-code": {
 			"import": "./dist/worker-code.js",
 			"require": "./dist/worker-code.cjs"
-		}
+		},
+		"./dist/worker.global.js": "./dist/worker.global.js",
+		"./dist/emscripten-module.wasm": "./dist/emscripten-module.wasm"
 	},
 	"keywords": [],
 	"author": "",
 	"license": "ISC",
 	"dependencies": {
-		"@libsql/client": "^0.17.0",
 		"@electric-sql/pglite": "^0.3.15",
 		"@jitl/quickjs-ng-wasmfile-debug-asyncify": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-asyncify-0.31.0.tgz",
 		"@jitl/quickjs-ng-wasmfile-debug-sync": "https://dz2mm03ciss9t.cloudfront.net/jitl-quickjs-ng-wasmfile-debug-sync-0.31.0.tgz",
@@ -69,6 +71,7 @@
 	"devDependencies": {
 		"@babel/core": "^7.29.0",
 		"@babel/preset-env": "^7.29.0",
+		"@types/jest": "^29.0.0",
 		"@types/node": "^22.9.0",
 		"@types/pako": "^2.0.3",
 		"babelify": "^10.0.0",
@@ -76,6 +79,8 @@
 		"esbuild": "^0.19.12",
 		"esbuild-plugins-node-modules-polyfill": "^1.8.1",
 		"fs.promises": "^0.1.2",
+		"jest": "^29.0.0",
+		"ts-jest": "^29.0.0",
 		"tsup": "^8.3.5",
 		"tsx": "^4.0.0",
 		"typescript": "^5.6.3"
