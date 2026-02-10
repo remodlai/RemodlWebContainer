@@ -13,10 +13,6 @@ import variant from "@jitl/quickjs-ng-wasmfile-release-asyncify"
 import { HTTPModule } from './modules/http';
 import { HostRequest, NetworkModule, statusCodeToStatusText } from './modules/network-module';
 
-// Import Node.js builtin files as raw strings (bundled at build time)
-import primordialsSource from '../../../builtins/primordials.js?raw';
-import internalBindingSource from '../../../builtins/internalBinding.cjs?raw';
-
 export class NodeProcess extends Process {
     private fileSystem: IFileSystem;
     private networkManager: NetworkManager;
@@ -251,8 +247,13 @@ export class NodeProcess extends Process {
     }
 
     private setupNodeInternals(context: QuickJSContext) {
-        // Load primordials from bundled source (imported as raw string at build time)
-        const primordialsResult = context.evalCode(primordialsSource, 'primordials.js');
+        // Load primordials from actual builtin file - NO STUBS ALLOWED
+        const primordialsCode = this.fileSystem.readFile('/builtins/primordials.js');
+        if (!primordialsCode) {
+            throw new Error('CRITICAL: /builtins/primordials.js not found in filesystem. Builtin files must be provisioned during container initialization.');
+        }
+
+        const primordialsResult = context.evalCode(primordialsCode, 'primordials.js');
         if (primordialsResult.error) {
             const error = context.dump(primordialsResult.error);
             primordialsResult.error.dispose();
@@ -262,8 +263,13 @@ export class NodeProcess extends Process {
         context.setProp(context.global, 'primordials', primordialsResult.value);
         primordialsResult.value.dispose();
 
-        // Load internalBinding from bundled source (imported as raw string at build time)
-        const bindingResult = context.evalCode(internalBindingSource, 'internalBinding.cjs');
+        // Load internalBinding from actual builtin file - NO STUBS ALLOWED
+        const bindingCode = this.fileSystem.readFile('/builtins/internalBinding.cjs');
+        if (!bindingCode) {
+            throw new Error('CRITICAL: /builtins/internalBinding.cjs not found in filesystem. Builtin files must be provisioned during container initialization.');
+        }
+
+        const bindingResult = context.evalCode(bindingCode, 'internalBinding.cjs');
         if (bindingResult.error) {
             const error = context.dump(bindingResult.error);
             bindingResult.error.dispose();
