@@ -25,8 +25,8 @@ describe('QuickJS WASM Loading Integration', () => {
               );
               return resolved;
             } catch (e) {
-              // Fallback (for browser/worker)
-              return '/emscripten-module.wasm';
+              // Fallback (for browser/worker) - matches Session Workers R2 path
+              return '/wasm/emscripten-module.wasm';
             }
           }
           return path;

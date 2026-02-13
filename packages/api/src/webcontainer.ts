@@ -25,6 +25,8 @@ export interface WebContainerBootOptions {
   forwardPreviewErrors?: boolean;
   /** libSQL filesystem configuration for persistence */
   filesystem?: FilesystemConfig;
+  /** Base URL for loading runtime assets (default: npm package) */
+  baseUrl?: string;
 }
 
 /**
@@ -205,6 +207,7 @@ export class WebContainer extends EventEmitter {
       maxProcesses: 20,
       memoryLimit: 1024 * 1024 * 1024, // 1GB
       filesystem: options.filesystem,  // Pass through libSQL config
+      baseUrl: options.baseUrl,  // Pass through baseUrl for runtime assets
       onServerListen: (port) => {
         // Server listening event
       },

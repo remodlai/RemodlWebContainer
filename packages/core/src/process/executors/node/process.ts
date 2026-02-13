@@ -40,8 +40,8 @@ export class NodeProcess extends Process {
             const customVariant = newVariant(variant, {
                 locateFile: (fileName: string, prefix: string) => {
                     if (fileName.endsWith('.wasm')) {
-                        // WASM file is served from playground/public/ at root path
-                        return '/emscripten-module.wasm';
+                        // WASM file is served from Session Workers R2 at /wasm/ prefix
+                        return '/wasm/emscripten-module.wasm';
                     }
                     return prefix + fileName;
                 }

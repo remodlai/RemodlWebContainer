@@ -8,6 +8,8 @@ export interface ContainerOptions {
     onServerClose?: (port: number) => void;
     /** libSQL filesystem configuration (optional - falls back to ZenFSCore if not provided) */
     filesystem?: FilesystemConfig;
+    /** Base URL for loading runtime assets (default: npm package) */
+    baseUrl?: string;
 }
 
 export interface ContainerStats {

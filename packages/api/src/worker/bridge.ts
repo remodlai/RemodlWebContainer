@@ -22,11 +22,13 @@ export class WorkerBridge {
     private nextRequestId: number = 0;
     private initialized: boolean = false;
     private defaultTimeout: number = 30000;
+    private baseUrl?: string;
 
-    constructor() {
+    constructor(baseUrl?: string) {
         if (typeof Worker === 'undefined') {
             throw new Error('Web Workers are not supported in this environment');
         }
+        this.baseUrl = baseUrl;
     }
     async initialize(options: WorkerInitOptions): Promise<void> {
         if (this.initialized) {
@@ -115,7 +117,14 @@ export class WorkerBridge {
         try {
             // Use real worker file URL instead of blob to preserve URL context
             // Blob workers have no URL, which breaks import.meta.url resolution needed for QuickJS WASM loading
-            const workerUrl = new URL('@remodl-web-container/core/dist/worker.global.js', import.meta.url);
+            let workerUrl: URL;
+            if (this.baseUrl) {
+                // Load worker from custom baseUrl (e.g., session Worker URL)
+                workerUrl = new URL('/worker.global.js', this.baseUrl);
+            } else {
+                // Default: load from npm package
+                workerUrl = new URL('@remodl-web-container/core/dist/worker.global.js', import.meta.url);
+            }
             this.worker = new Worker(workerUrl, { type: 'module' });
 
             // Set up message handling
