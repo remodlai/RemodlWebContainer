@@ -10,6 +10,7 @@
 	},
 	"dependencies": {
 		"@remodl-web-container/core": "workspace:*",
+		"comlink": "^4.4.2",
 		"eventemitter3": "^5.0.1"
 	},
 	"peerDependencies": {
