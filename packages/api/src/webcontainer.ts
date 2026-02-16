@@ -729,3 +729,8 @@ export interface TextSearchMatch {
 }
 
 export type TextSearchOnProgressCallback = (filePath: string, matches: TextSearchMatch[]) => void;
+
+export interface TextSearchResult {
+  filePath: string;
+  matches: TextSearchMatch[];
+}

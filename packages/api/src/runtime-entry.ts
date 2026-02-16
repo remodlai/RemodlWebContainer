@@ -11,20 +11,14 @@
 
 import * as Comlink from 'comlink';
 import { ContainerManager } from './container/container';
+import type { FilesystemConfig } from './worker/types';
 
 interface BuildConfig {
   host: string;
   version: string;
   workdirName?: string;
   forwardPreviewErrors?: boolean | 'exceptions-only';
-  filesystem?: {
-    organizationId: string;
-    userId: string;
-    projectId: string;
-    sessionId: string;
-    syncUrl: string;
-    authToken: string;
-  };
+  filesystem?: FilesystemConfig;
   baseUrl?: string;
 }
 
