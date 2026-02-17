@@ -33,7 +33,8 @@ export interface FilesystemConfig {
     userId: string;
     agentId: string;
     sessionId: string;
-    projectId?: string;
+    projectId: string;
+    /** libsql-server URL. Use '/db' for same-origin proxy via Session Worker, or absolute URL for direct access */
     syncUrl: string;
     authToken?: string;
 }
@@ -244,8 +245,8 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<InitializationResult> {
         // Build namespace paths
-        const projectNamespace = `org-${config.organizationId}/project-${config.projectId || 'default'}`;
-        const agentNamespace = `org-${config.organizationId}/session-${config.sessionId}`;
+        const projectNamespace = `org-${config.organizationId}-project-${config.projectId}`;
+        const agentNamespace = `${projectNamespace}-agent-workspace`;
 
         log('Configuring mounts:', {
             projectNamespace,
@@ -253,9 +254,11 @@ export class RemodlWebContainer {
             syncUrl: config.syncUrl,
         });
 
-        // Build mount configuration - use remote URLs directly (no embedded replica)
-        const projectUrl = config.syncUrl ? `${config.syncUrl}/v1/namespaces/${projectNamespace}` : undefined;
-        const agentUrl = config.syncUrl ? `${config.syncUrl}/v1/namespaces/${agentNamespace}` : undefined;
+        // Use same-origin /db proxy route so requests go through Session Worker → Outbound Worker → libSQL
+        // Resolve relative URLs to absolute (libSQL client requires absolute URLs)
+        const origin = typeof self !== 'undefined' && self.location ? self.location.origin : '';
+        const projectUrl = origin ? `${origin}/db/v1/namespaces/${projectNamespace}` : `/db/v1/namespaces/${projectNamespace}`;
+        const agentUrl = origin ? `${origin}/db/v1/namespaces/${agentNamespace}` : `/db/v1/namespaces/${agentNamespace}`;
 
         const projectOptions: LibSQLBackendOptions = {
             url: projectUrl || ':memory:',  // Remote URL, fallback to memory
@@ -351,6 +354,8 @@ export class RemodlWebContainer {
             '/.agent-workspace/memory',
             '/.agent-workspace/memory/agent',
             '/.agent-workspace/memory/agent/shared',
+            '/.agent-workspace/sessions',
+            '/.agent-workspace/tools',
             '/.agent-workspace/conversations',
             '/.agent-workspace/analysis',
             '/.agent-workspace/planning',
