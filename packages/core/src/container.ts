@@ -254,11 +254,16 @@ export class RemodlWebContainer {
             syncUrl: config.syncUrl,
         });
 
-        // Use same-origin /db proxy route so requests go through Session Worker → Outbound Worker → libSQL
-        // Resolve relative URLs to absolute (libSQL client requires absolute URLs)
+        // Use same-origin /db/{namespace} proxy route → Outbound Worker → libSQL
+        // libSQL client appends /v2/pipeline to the base URL, so:
+        //   URL: {origin}/db/{namespace} → client calls {origin}/db/{namespace}/v2/pipeline
+        //   Outbound Worker parses: /db/{namespace}/v2/pipeline → routes to libSQL with x-namespace header
+        // Trailing slash is REQUIRED: libSQL client uses relative URL resolution (new URL('v2/pipeline', base))
+        // Without it: /db/namespace → resolves to /db/v2/pipeline (namespace dropped)
+        // With it:    /db/namespace/ → resolves to /db/namespace/v2/pipeline (correct)
         const origin = typeof self !== 'undefined' && self.location ? self.location.origin : '';
-        const projectUrl = origin ? `${origin}/db/v1/namespaces/${projectNamespace}` : `/db/v1/namespaces/${projectNamespace}`;
-        const agentUrl = origin ? `${origin}/db/v1/namespaces/${agentNamespace}` : `/db/v1/namespaces/${agentNamespace}`;
+        const projectUrl = origin ? `${origin}/db/${projectNamespace}/` : `/db/${projectNamespace}/`;
+        const agentUrl = origin ? `${origin}/db/${agentNamespace}/` : `/db/${agentNamespace}/`;
 
         const projectOptions: LibSQLBackendOptions = {
             url: projectUrl || ':memory:',  // Remote URL, fallback to memory
