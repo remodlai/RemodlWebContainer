@@ -12,22 +12,30 @@ self.onmessage = async function (e: MessageEvent<WorkerMessage>) {
 
     switch (type) {
         case 'initialize':
-            let { payload } = e.data;
-            // Initialize container using factory pattern
-            // All async initialization completes before create() returns
-            container = await RemodlWebContainer.create({
-                debug: payload.debug,
-                filesystem: payload.filesystem,  // Pass libSQL config if provided
-                onServerListen:(port)=>{
-                    sendWorkerResponse({ type: 'onServerListen', id, payload:{port} });
-                },
-                onServerClose:(port)=>{
-                    sendWorkerResponse({ type: 'onServerClose', id, payload:{port} });
-                }
-            });
+            try {
+                let { payload } = e.data;
+                // Initialize container using factory pattern
+                // All async initialization completes before create() returns
+                container = await RemodlWebContainer.create({
+                    debug: payload.debug,
+                    filesystem: payload.filesystem,  // Pass libSQL config if provided
+                    onServerListen:(port)=>{
+                        sendWorkerResponse({ type: 'onServerListen', id, payload:{port} });
+                    },
+                    onServerClose:(port)=>{
+                        sendWorkerResponse({ type: 'onServerClose', id, payload:{port} });
+                    }
+                });
 
-            // Send back confirmation
-            sendWorkerResponse({ type: 'initialized', id });
+                // Send back confirmation
+                sendWorkerResponse({ type: 'initialized', id });
+            } catch (error: any) {
+                sendWorkerResponse({
+                    type: 'error',
+                    id,
+                    payload: { error: `Initialize failed: ${error.message}\n${error.stack || ''}` }
+                });
+            }
             break;
         case 'spawn':
             try {

@@ -20,16 +20,16 @@ echo "--- Building runtime bundle (iframe entry) ---"
 npx esbuild packages/api/src/runtime-entry.ts \
   --bundle \
   --format=esm \
-  --outfile=dist/runtime-bundle.temp.js \
+  --outfile=dist/remodl-webcontainer.temp.js \
   --minify
 
 # 3. Generate content hash from built bundle
-HASH=$(cat dist/runtime-bundle.temp.js | sha256sum | cut -c1-8)
+HASH=$(cat dist/remodl-webcontainer.temp.js | sha256sum | cut -c1-8)
 
 # 4. Rename with hash
-mv dist/runtime-bundle.temp.js dist/runtime-bundle.$HASH.js
+mv dist/remodl-webcontainer.temp.js dist/remodl-webcontainer.$HASH.js
 
-echo "Runtime bundle: dist/runtime-bundle.$HASH.js"
+echo "Runtime bundle: dist/remodl-webcontainer.$HASH.js"
 echo "$HASH" > dist/bundle-hash.txt
 echo "Hash saved to: dist/bundle-hash.txt"
 
@@ -39,7 +39,7 @@ cp packages/runtime/headless.html dist/headless.html
 echo ""
 echo "=== Build complete ==="
 echo "Thin client (npm):  packages/api/dist/index.js"
-echo "Runtime bundle:     dist/runtime-bundle.$HASH.js"
+echo "Runtime bundle:     dist/remodl-webcontainer.$HASH.js"
 echo "Headless template:  dist/headless.html"
 echo ""
-echo "Ready for upload: dist/runtime-bundle.$HASH.js + dist/headless.html"
+echo "Ready for upload: dist/remodl-webcontainer.$HASH.js + dist/headless.html"
