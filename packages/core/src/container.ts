@@ -253,10 +253,12 @@ export class RemodlWebContainer {
             syncUrl: config.syncUrl,
         });
 
-        // Build mount configuration
+        // Build mount configuration - use remote URLs directly (no embedded replica)
+        const projectUrl = config.syncUrl ? `${config.syncUrl}/v1/namespaces/${projectNamespace}` : undefined;
+        const agentUrl = config.syncUrl ? `${config.syncUrl}/v1/namespaces/${agentNamespace}` : undefined;
+
         const projectOptions: LibSQLBackendOptions = {
-            url: `file:/project-${config.projectId || 'default'}.db`,
-            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${projectNamespace}` : undefined,
+            url: projectUrl || ':memory:',  // Remote URL, fallback to memory
             authToken: config.authToken,
             organizationId: config.organizationId,
             agentId: null, // Project FS has no agent
@@ -264,8 +266,7 @@ export class RemodlWebContainer {
         };
 
         const agentOptions: LibSQLBackendOptions = {
-            url: `file:/agent-${config.sessionId}.db`,
-            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${agentNamespace}` : undefined,
+            url: agentUrl || ':memory:',  // Remote URL, fallback to memory
             authToken: config.authToken,
             organizationId: config.organizationId,
             agentId: config.agentId,

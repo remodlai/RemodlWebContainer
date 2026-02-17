@@ -1,15 +1,8 @@
 import { ServerType } from '../../../network/types';
 import { IFileSystem } from '../../../filesystem';
 import { Process, ProcessEvent, ProcessState, ProcessType } from '../../base';
-import {  QuickJSContext, QuickJSHandle, newQuickJSAsyncWASMModuleFromVariant, newVariant } from 'quickjs-emscripten';
+import type {  QuickJSContext, QuickJSHandle } from 'quickjs-emscripten';
 import { NetworkManager } from '../../../network/manager';
-// Previous variants (standard QuickJS, now replaced with custom QuickJS-ng)
-// import variant from "@jitl/quickjs-singlefile-browser-release-sync"
-// import variant from "@jitl/quickjs-asmjs-mjs-release-sync"
-// import variant from "@jitl/quickjs-singlefile-browser-release-asyncify"
-
-// Custom QuickJS-ng with 14 qjs-modules (stream, child_process, path, etc.)
-import variant from "@jitl/quickjs-ng-wasmfile-release-asyncify"
 import { HTTPModule } from './modules/http';
 import { HostRequest, NetworkModule, statusCodeToStatusText } from './modules/network-module';
 
@@ -36,6 +29,10 @@ export class NodeProcess extends Process {
 
     async execute(): Promise<void> {
         try {
+            // Lazy-load QuickJS WASM only when spawn() is called (not at module parse time)
+            const { newQuickJSAsyncWASMModuleFromVariant, newVariant } = await import('quickjs-emscripten');
+            const { default: variant } = await import('@jitl/quickjs-ng-wasmfile-release-asyncify');
+
             // Configure WASM file location using newVariant() API
             const customVariant = newVariant(variant, {
                 locateFile: (fileName: string, prefix: string) => {
