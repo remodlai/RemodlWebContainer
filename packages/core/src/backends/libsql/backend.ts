@@ -1,95 +1,62 @@
 // SPDX-License-Identifier: MIT
 /**
- * LibSQLBackend — ZenFS Backend backed by libSQL
+ * LibSQLBackend — ZenFS v2.4.4 Backend backed by libSQL
  *
- * Extends FileSystem directly (NOT StoreFS) so ZenFS uses our path-based API.
- * StoreFS requires get(id: bigint) — incompatible with our path-based files table.
+ * Uses Async(FileSystem) mixin pattern:
+ * - LibSQLFS extends Async(FileSystem) — implements async methods only
+ * - Async() generates all *Sync methods via _sync (InMemory cache)
+ * - No manual _cache Map — Async() handles crossCopy on ready()
  *
- * Schema design:
- * - PRIMARY KEY is (path) only — the namespace IS the isolation boundary
- * - organization_id and agent_id are audit columns only (who last wrote this file)
- * - Never used in WHERE clauses for reads — path uniquely identifies a file
- *
- * Pattern:
- *   openFile  → SELECT content from DB → return PreloadFile (in-memory handle)
- *   createFile → INSERT empty row     → return PreloadFile (in-memory handle)
- *   sync      → UPDATE content in DB  ← called by PreloadFile on close/flush
- *
- * Sync API:
- *   Backed by Map<path, Stats> cache populated on every async operation.
- *   statSync reads from cache — throws ENOENT on miss (not ENOSYS).
- *
- * See: dev-notes/docs/remodl-webcontainer/ZENFS-BACKEND-INTEGRATION.md
+ * Schema: PRIMARY KEY (path), organization_id and agent_id as audit columns only.
  */
 
 import { createClient, type Client } from '@libsql/client';
 import type { LibSQLBackendOptions } from './types';
 import { LibSQLStore } from './store';
+import { Async, FileSystem, InMemory, type InodeLike, type CreationOptions } from '@zenfs/core';
 
-// ZenFS internal imports — @zenfs/core maps "./*" → "./dist/*"
-import { FileSystem, type FileSystemMetadata } from '@zenfs/core/filesystem.js';
-import { Stats } from '@zenfs/core/stats.js';
-import { PreloadFile } from '@zenfs/core/file.js';
-import { ErrnoError } from '@zenfs/core/error.js';
-
-/**
- * Backend interface compatible with ZenFS configure()
- */
-export interface Backend<FS = unknown, TOptions = object> {
-    name: string;
-    options: Record<string, { type: string | readonly string[]; required: boolean }>;
-    create(options: TOptions): FS | Promise<FS>;
-    isAvailable?(config: TOptions): boolean | Promise<boolean>;
+/** Create an errno-compatible error (ZenFS v2 uses kerium's Exception; this is a compatible shim) */
+function errnoError(code: string, path?: string, syscall?: string): Error {
+    const err = Object.assign(new Error(`${code}: ${syscall || 'unknown'} '${path || ''}'`), { code, path, syscall });
+    return err;
 }
 
+const DEFAULT_FILE_MODE = 0o100644; // 33188
+const DEFAULT_DIR_MODE = 0o040755;  // 16877
+
 /**
- * LibSQLFS — ZenFS FileSystem backed by libSQL path-based storage.
+ * LibSQLFS — ZenFS v2.4.4 FileSystem backed by libSQL path-based storage.
  *
- * The namespace provides isolation — path is the only key needed.
- * organization_id and agent_id are audit columns written on mutations.
+ * Extends Async(FileSystem): only async methods implemented here.
+ * Async() provides all *Sync methods via _sync (InMemory instance).
+ * ready() triggers crossCopy which preloads libSQL data into _sync.
  */
-export class LibSQLFS extends FileSystem {
+export class LibSQLFS extends Async(FileSystem) {
+    _sync = InMemory.create({});
+
     private client: Client;
     private organizationId: string;
     private agentId: string | null;
     readonly label?: string;
 
-    /** Live record of what we know is true right now. Key = path. */
-    private _cache: Map<string, Stats> = new Map();
-
     constructor(client: Client, options: LibSQLBackendOptions) {
-        super();
+        super(0x4c53, 'libsqlfs');
         this.client = client;
         this.organizationId = options.organizationId;
         this.agentId = options.agentId ?? null;
         this.label = options.label;
     }
 
-    metadata(): FileSystemMetadata {
-        return {
-            name: 'libsqlfs',
-            readonly: false,
-            totalSpace: 0,
-            freeSpace: 0,
-            noResizableBuffers: false,
-            noAsyncCache: false,
-            type: 0x6c73716c,
-        };
-    }
-
     /**
-     * Initialize schema and ensure root directory exists.
-     * Called by LibSQLBackend.create() before returning the FS.
-     *
-     * Schema: PRIMARY KEY (path) — namespace provides isolation.
-     * organization_id and agent_id are audit columns only.
+     * Initialize schema and seed root directory.
+     * Called before ready(), which triggers Async() crossCopy.
      */
-    async initialize(): Promise<void> {
+    private async initialize(): Promise<void> {
         await this.client.execute(`
             CREATE TABLE IF NOT EXISTS files (
                 path        TEXT PRIMARY KEY,
                 content     BLOB,
-                mode        INTEGER NOT NULL DEFAULT 33188,
+                mode        INTEGER NOT NULL DEFAULT ${DEFAULT_FILE_MODE},
                 uid         INTEGER NOT NULL DEFAULT 1000,
                 gid         INTEGER NOT NULL DEFAULT 1000,
                 size        INTEGER NOT NULL DEFAULT 0,
@@ -102,9 +69,9 @@ export class LibSQLFS extends FileSystem {
             )
         `);
 
-        await this.client.execute(`
-            CREATE INDEX IF NOT EXISTS idx_files_path_prefix ON files(path)
-        `);
+        await this.client.execute(
+            `CREATE INDEX IF NOT EXISTS idx_files_path_prefix ON files(path)`
+        );
 
         // Ensure root directory exists
         const root = await this.client.execute(`SELECT 1 FROM files WHERE path = '/'`);
@@ -112,46 +79,41 @@ export class LibSQLFS extends FileSystem {
             const now = new Date().toISOString();
             await this.client.execute({
                 sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
-                      VALUES ('/', NULL, 16877, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)`,
-                args: [now, now, now, now, this.organizationId, this.agentId],
+                      VALUES ('/', NULL, ?, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)`,
+                args: [DEFAULT_DIR_MODE, now, now, now, now, this.organizationId, this.agentId],
             });
-        }
-
-        // Pre-warm cache from all existing DB rows so statSync works immediately.
-        const existing = await this.client.execute(
-            `SELECT path, mode, size, atime, mtime, ctime, birthtime, uid, gid FROM files`
-        );
-        for (const r of existing.rows) {
-            this._cache.set(r.path as string, new Stats({
-                mode: r.mode as number,
-                size: r.size as number,
-                atimeMs: new Date(r.atime as string).getTime(),
-                mtimeMs: new Date(r.mtime as string).getTime(),
-                ctimeMs: new Date(r.ctime as string).getTime(),
-                birthtimeMs: new Date(r.birthtime as string).getTime(),
-                uid: r.uid as number,
-                gid: r.gid as number,
-                ino: 0,
-            }));
         }
     }
 
-    // -------------------------------------------------------------------------
-    // stat
-    // -------------------------------------------------------------------------
+    /**
+     * Override ready() to run initialize(), then let Async() crossCopy.
+     */
+    async ready(): Promise<void> {
+        await this.initialize();
+        await super.ready();
+    }
 
-    async stat(path: string): Promise<Stats> {
+    // -- async methods that Async(FileSystem) requires --
+
+    async rename(oldPath: string, newPath: string): Promise<void> {
+        await this.client.execute({
+            sql: `UPDATE files SET path = ? WHERE path = ?`,
+            args: [newPath, oldPath],
+        });
+    }
+
+    async stat(path: string): Promise<InodeLike> {
         const result = await this.client.execute({
             sql: `SELECT mode, size, atime, mtime, ctime, birthtime, uid, gid FROM files WHERE path = ?`,
             args: [path],
         });
 
         if (!result.rows.length) {
-            throw ErrnoError.With('ENOENT', path, 'stat');
+            throw errnoError('ENOENT', path, 'stat');
         }
 
         const r = result.rows[0];
-        const stats = new Stats({
+        return {
             mode: r.mode as number,
             size: r.size as number,
             atimeMs: new Date(r.atime as string).getTime(),
@@ -161,112 +123,69 @@ export class LibSQLFS extends FileSystem {
             uid: r.uid as number,
             gid: r.gid as number,
             ino: 0,
-        });
-
-        this._cache.set(path, stats);
-        return stats;
+            nlink: 1,
+        };
     }
 
-    statSync(path: string): Stats {
-        const cached = this._cache.get(path);
-        if (cached) return cached;
-        throw ErrnoError.With('ENOENT', path, 'statSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // openFile — load from DB, return PreloadFile
-    // -------------------------------------------------------------------------
-
-    async openFile(path: string, flag: string): Promise<PreloadFile<LibSQLFS>> {
-        const stats = await this.stat(path);
-
-        const result = await this.client.execute({
-            sql: `SELECT content FROM files WHERE path = ?`,
-            args: [path],
-        });
-
-        const raw = result.rows[0]?.content;
-        let buffer: Uint8Array;
-
-        if (raw === null || raw === undefined) {
-            buffer = new Uint8Array(0);
-        } else if (raw instanceof Uint8Array) {
-            buffer = raw;
-        } else if (raw instanceof ArrayBuffer) {
-            buffer = new Uint8Array(raw);
-        } else if (ArrayBuffer.isView(raw)) {
-            buffer = new Uint8Array((raw as ArrayBufferView).buffer, (raw as ArrayBufferView).byteOffset, (raw as ArrayBufferView).byteLength);
-        } else if (typeof raw === 'string') {
-            const binary = atob(raw);
-            buffer = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) buffer[i] = binary.charCodeAt(i);
-        } else {
-            buffer = new Uint8Array(0);
-        }
-
-        return new PreloadFile<LibSQLFS>(this, path, flag, stats, buffer);
-    }
-
-    openFileSync(_path: string, _flag: string): PreloadFile<LibSQLFS> {
-        throw ErrnoError.With('ENOSYS', _path, 'openFileSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // createFile — insert empty row, return PreloadFile
-    // -------------------------------------------------------------------------
-
-    async createFile(path: string, flag: string, mode: number): Promise<PreloadFile<LibSQLFS>> {
+    async touch(path: string, metadata: Partial<InodeLike>): Promise<void> {
         const now = new Date().toISOString();
+        const atime = metadata.atimeMs ? new Date(metadata.atimeMs).toISOString() : now;
+        const mtime = metadata.mtimeMs ? new Date(metadata.mtimeMs).toISOString() : now;
+        const ctime = metadata.ctimeMs ? new Date(metadata.ctimeMs).toISOString() : now;
+
+        await this.client.execute({
+            sql: `UPDATE files SET atime = ?, mtime = ?, ctime = ?, organization_id = ?, agent_id = ? WHERE path = ?`,
+            args: [atime, mtime, ctime, this.organizationId, this.agentId, path],
+        });
+    }
+
+    async createFile(path: string, options: CreationOptions): Promise<InodeLike> {
+        const now = new Date().toISOString();
+        const mode = options.mode ?? DEFAULT_FILE_MODE;
+        const uid = options.uid ?? 1000;
+        const gid = options.gid ?? 1000;
+
         await this.client.execute({
             sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
-                  VALUES (?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)
+                  VALUES (?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT (path) DO UPDATE SET mode = excluded.mode, mtime = excluded.mtime, ctime = excluded.ctime`,
-            args: [path, mode, now, now, now, now, this.organizationId, this.agentId],
+            args: [path, mode, uid, gid, now, now, now, now, this.organizationId, this.agentId],
         });
 
-        const stats = await this.stat(path);
-        return new PreloadFile<LibSQLFS>(this, path, flag, stats, new Uint8Array(0));
+        return {
+            mode, size: 0, uid, gid,
+            atimeMs: Date.now(), mtimeMs: Date.now(), ctimeMs: Date.now(), birthtimeMs: Date.now(),
+            ino: 0, nlink: 1,
+        };
     }
 
-    createFileSync(_path: string, _flag: string, _mode: number): PreloadFile<LibSQLFS> {
-        throw ErrnoError.With('ENOSYS', _path, 'createFileSync');
+    async unlink(path: string): Promise<void> {
+        await this.client.execute({ sql: `DELETE FROM files WHERE path = ?`, args: [path] });
     }
 
-    // -------------------------------------------------------------------------
-    // sync — flush PreloadFile buffer back to libSQL (called on file close)
-    // -------------------------------------------------------------------------
+    async rmdir(path: string): Promise<void> {
+        await this.client.execute({ sql: `DELETE FROM files WHERE path = ?`, args: [path] });
+    }
 
-    async sync(path: string, data: Uint8Array, stats: Readonly<Stats>): Promise<void> {
-        this._cache.set(path, stats as Stats);
+    async mkdir(path: string, options: CreationOptions): Promise<InodeLike> {
         const now = new Date().toISOString();
-        const mtime = stats.mtimeMs ? new Date(stats.mtimeMs as number).toISOString() : now;
-        const atime = stats.atimeMs ? new Date(stats.atimeMs as number).toISOString() : now;
-        const btime = stats.birthtimeMs ? new Date(stats.birthtimeMs as number).toISOString() : now;
+        const mode = options.mode ?? DEFAULT_DIR_MODE;
+        const uid = options.uid ?? 1000;
+        const gid = options.gid ?? 1000;
 
         await this.client.execute({
             sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT (path) DO UPDATE SET
-                    content = excluded.content, size = excluded.size,
-                    mode = excluded.mode, uid = excluded.uid, gid = excluded.gid,
-                    atime = excluded.atime, mtime = excluded.mtime, ctime = excluded.ctime,
-                    organization_id = excluded.organization_id, agent_id = excluded.agent_id`,
-            args: [
-                path, data,
-                stats.mode as number, stats.uid as number, stats.gid as number,
-                data.length, atime, mtime, now, btime,
-                this.organizationId, this.agentId,
-            ],
+                  VALUES (?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT (path) DO NOTHING`,
+            args: [path, mode, uid, gid, now, now, now, now, this.organizationId, this.agentId],
         });
-    }
 
-    syncSync(_path: string, _data: Uint8Array, _stats: Readonly<Stats>): void {
-        throw ErrnoError.With('ENOSYS', _path, 'syncSync');
+        return {
+            mode, size: 0, uid, gid,
+            atimeMs: Date.now(), mtimeMs: Date.now(), ctimeMs: Date.now(), birthtimeMs: Date.now(),
+            ino: 0, nlink: 1,
+        };
     }
-
-    // -------------------------------------------------------------------------
-    // readdir — immediate children only
-    // -------------------------------------------------------------------------
 
     async readdir(path: string): Promise<string[]> {
         const prefix = path === '/' ? '/' : path.endsWith('/') ? path : path + '/';
@@ -283,91 +202,95 @@ export class LibSQLFS extends FileSystem {
         }
 
         const result = await this.client.execute({ sql, args });
-        return result.rows.map(r => {
-            const full = r.path as string;
-            return full.slice(prefix.length);
-        }).filter(name => name.length > 0);
+        return result.rows
+            .map(r => (r.path as string).slice(prefix.length))
+            .filter(name => name.length > 0);
     }
-
-    readdirSync(_path: string): string[] {
-        throw ErrnoError.With('ENOSYS', _path, 'readdirSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // mkdir
-    // -------------------------------------------------------------------------
-
-    async mkdir(path: string, mode: number): Promise<void> {
-        const now = new Date().toISOString();
-        const dirMode = mode || 16877;
-        await this.client.execute({
-            sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
-                  VALUES (?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT (path) DO NOTHING`,
-            args: [path, dirMode, now, now, now, now, this.organizationId, this.agentId],
-        });
-        this._cache.set(path, new Stats({ mode: dirMode, size: 0, atimeMs: Date.now(), mtimeMs: Date.now(), ctimeMs: Date.now(), birthtimeMs: Date.now(), uid: 1000, gid: 1000, ino: 0 }));
-    }
-
-    mkdirSync(_path: string, _mode: number): void {
-        throw ErrnoError.With('ENOSYS', _path, 'mkdirSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // unlink / rmdir
-    // -------------------------------------------------------------------------
-
-    async unlink(path: string): Promise<void> {
-        await this.client.execute({ sql: `DELETE FROM files WHERE path = ?`, args: [path] });
-        this._cache.delete(path);
-    }
-
-    unlinkSync(_path: string): void {
-        throw ErrnoError.With('ENOSYS', _path, 'unlinkSync');
-    }
-
-    async rmdir(path: string): Promise<void> {
-        await this.unlink(path);
-    }
-
-    rmdirSync(_path: string): void {
-        throw ErrnoError.With('ENOSYS', _path, 'rmdirSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // rename
-    // -------------------------------------------------------------------------
-
-    async rename(oldPath: string, newPath: string): Promise<void> {
-        await this.client.execute({
-            sql: `UPDATE files SET path = ? WHERE path = ?`,
-            args: [newPath, oldPath],
-        });
-        const cached = this._cache.get(oldPath);
-        this._cache.delete(oldPath);
-        if (cached) this._cache.set(newPath, cached);
-    }
-
-    renameSync(_oldPath: string, _newPath: string): void {
-        throw ErrnoError.With('ENOSYS', _oldPath, 'renameSync');
-    }
-
-    // -------------------------------------------------------------------------
-    // link
-    // -------------------------------------------------------------------------
 
     async link(_target: string, _link: string): Promise<void> {
-        throw ErrnoError.With('ENOSYS', _target, 'link');
+        throw errnoError('ENOSYS', _target, 'link');
     }
 
-    linkSync(_target: string, _link: string): void {
-        throw ErrnoError.With('ENOSYS', _target, 'linkSync');
+    async sync(): Promise<void> {
+        // no-op — libSQL has no buffering
+    }
+
+    async read(path: string, buffer: Uint8Array, start: number, end: number): Promise<void> {
+        const result = await this.client.execute({
+            sql: `SELECT content FROM files WHERE path = ?`,
+            args: [path],
+        });
+
+        const raw = result.rows[0]?.content;
+        if (raw === null || raw === undefined) return;
+
+        let content: Uint8Array;
+        if (raw instanceof Uint8Array) {
+            content = raw;
+        } else if (raw instanceof ArrayBuffer) {
+            content = new Uint8Array(raw);
+        } else if (ArrayBuffer.isView(raw)) {
+            content = new Uint8Array((raw as ArrayBufferView).buffer, (raw as ArrayBufferView).byteOffset, (raw as ArrayBufferView).byteLength);
+        } else if (typeof raw === 'string') {
+            const binary = atob(raw);
+            content = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) content[i] = binary.charCodeAt(i);
+        } else {
+            return;
+        }
+
+        const slice = content.subarray(start, end);
+        buffer.set(slice);
+    }
+
+    async write(path: string, buffer: Uint8Array, offset: number): Promise<void> {
+        // Read existing content, merge at offset, write back
+        const result = await this.client.execute({
+            sql: `SELECT content FROM files WHERE path = ?`,
+            args: [path],
+        });
+
+        let existing = new Uint8Array(0);
+        const raw = result.rows[0]?.content;
+        if (raw instanceof Uint8Array) {
+            existing = raw;
+        } else if (raw instanceof ArrayBuffer) {
+            existing = new Uint8Array(raw);
+        } else if (ArrayBuffer.isView(raw)) {
+            existing = new Uint8Array((raw as ArrayBufferView).buffer, (raw as ArrayBufferView).byteOffset, (raw as ArrayBufferView).byteLength);
+        }
+
+        const newSize = Math.max(existing.length, offset + buffer.length);
+        const merged = new Uint8Array(newSize);
+        merged.set(existing);
+        merged.set(buffer, offset);
+
+        const now = new Date().toISOString();
+        await this.client.execute({
+            sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
+                  VALUES (?, ?, ${DEFAULT_FILE_MODE}, 1000, 1000, ?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT (path) DO UPDATE SET
+                    content = excluded.content, size = excluded.size,
+                    mtime = excluded.mtime, ctime = excluded.ctime,
+                    organization_id = excluded.organization_id, agent_id = excluded.agent_id`,
+            args: [path, merged, merged.length, now, now, now, now, this.organizationId, this.agentId],
+        });
     }
 }
 
 // -------------------------------------------------------------------------
 // LibSQLBackend — factory for ZenFS configure()
 // -------------------------------------------------------------------------
+
+/**
+ * Backend interface compatible with ZenFS configure()
+ */
+export interface Backend<FS = unknown, TOptions = object> {
+    name: string;
+    options: Record<string, { type: string | readonly string[]; required: boolean }>;
+    create(options: TOptions): FS | Promise<FS>;
+    isAvailable?(config: TOptions): boolean | Promise<boolean>;
+}
 
 export const LibSQLBackend: Backend<LibSQLFS, LibSQLBackendOptions> = {
     name: 'LibSQL',
@@ -386,7 +309,7 @@ export const LibSQLBackend: Backend<LibSQLFS, LibSQLBackendOptions> = {
         const url = options.url || options.syncUrl || ':memory:';
         const client = createClient({ url, authToken: options.authToken });
         const fs = new LibSQLFS(client, options);
-        await fs.initialize();
+        // ready() is called by configure() — it runs initialize() then crossCopy
         return fs;
     },
 

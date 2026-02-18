@@ -9,7 +9,7 @@ import { NetworkManager } from "network/manager";
 import { ServerType, VirtualServer } from "./network/types";
 import { NetworkStats } from "./network/types";
 import { HostRequest } from "process/executors/node/modules/network-module";
-import { configure } from '@zenfs/core';
+import { configure, fs } from '@zenfs/core';
 import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
 import { LibSQLStore } from "./backends/libsql/store";
 import { createClient } from '@libsql/client';
@@ -221,7 +221,7 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<InitializationResult> {
         if (options.filesystem) {
-            log('Initializing libSQL filesystem...');
+            log('Initializing Anvil filesystem...');
             return await RemodlWebContainer.initializeLibSQLFilesystem(options.filesystem, log);
         } else {
             log('Using default in-memory ZenFS');
@@ -301,7 +301,7 @@ export class RemodlWebContainer {
             // Initialize stores (creates schema if needed)
             await projectStore.initialize();
             await agentStore.initialize();
-            log('LibSQL stores initialized for direct queries');
+            log('Anvil stores initialized for direct queries');
 
             // Configure ZenFS with dual mounts
             await configure({
@@ -317,7 +317,7 @@ export class RemodlWebContainer {
                 },
             });
 
-            log('ZenFS configured with libSQL mounts');
+            log('ZenFS configured with Anvil mounts');
 
             // Create ZenFSCore - it will use the configured global fs
             const fileSystem = new ZenFSCore();
@@ -328,7 +328,7 @@ export class RemodlWebContainer {
             // Copy builtin files to ZenFS
             await RemodlWebContainer.copyBuiltinFiles(fileSystem, log);
 
-            log('libSQL filesystem initialization complete');
+            log('Anvil filesystem initialization complete');
 
             return {
                 fileSystem,
@@ -337,7 +337,7 @@ export class RemodlWebContainer {
                 agentStore,
             };
         } catch (error) {
-            log('libSQL filesystem initialization failed:', error);
+            log('Anvil filesystem initialization failed:', error);
             log('Falling back to in-memory ZenFS');
 
             // Fall back to in-memory ZenFS
@@ -371,13 +371,14 @@ export class RemodlWebContainer {
 
         for (const dir of dirs) {
             try {
-                if (!fileSystem.fileExists(dir)) {
-                    fileSystem.createDirectory(dir);
-                    log(`Created directory: ${dir}`);
+                await fs.promises.mkdir(dir, { recursive: true });
+                log(`Created directory: ${dir}`);
+            } catch (e: any) {
+                if (e?.code === 'EEXIST') {
+                    log(`Directory already exists: ${dir}`);
+                } else {
+                    log(`Error creating directory ${dir}:`, e);
                 }
-            } catch (e) {
-                // Directory might already exist
-                log(`Directory already exists or error: ${dir}`);
             }
         }
     }
@@ -390,31 +391,35 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<void> {
         try {
-            // Create /builtins directory
-            if (!fileSystem.fileExists('/builtins')) {
-                fileSystem.createDirectory('/builtins');
-                log('Created /builtins directory');
-            }
+            // Create /builtins and /builtins/node directories
+            await fs.promises.mkdir('/builtins/node', { recursive: true });
+            log('Created /builtins directories');
 
             // Use static imports from builtins index (bundled at build time)
-            fileSystem.writeFile('/builtins/primordials.js', builtinSources['primordials.js']);
-            fileSystem.writeFile('/builtins/internalBinding.cjs', builtinSources['internalBinding.cjs']);
+            await fs.promises.writeFile('/builtins/primordials.js', builtinSources['primordials.js']);
+            await fs.promises.writeFile('/builtins/internalBinding.cjs', builtinSources['internalBinding.cjs']);
             log('Copied primordials and internalBinding');
 
             // Copy ALL Node.js builtin source files from static imports
             log('Copying Node.js builtin files...');
 
+            // Collect unique parent directories and create them first
+            const dirsNeeded = new Set<string>();
+            for (const path of Object.keys(nodeBuiltinSources)) {
+                const targetPath = `/builtins/node/${path}`;
+                const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
+                if (dirPath) {
+                    dirsNeeded.add(dirPath);
+                }
+            }
+            for (const dir of dirsNeeded) {
+                await fs.promises.mkdir(dir, { recursive: true });
+            }
+
             let copiedCount = 0;
             for (const [path, content] of Object.entries(nodeBuiltinSources)) {
                 const targetPath = `/builtins/node/${path}`;
-
-                // Ensure parent directory exists
-                const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
-                if (dirPath && !fileSystem.fileExists(dirPath)) {
-                    fileSystem.createDirectory(dirPath);
-                }
-
-                fileSystem.writeFile(targetPath, content);
+                await fs.promises.writeFile(targetPath, content);
                 copiedCount++;
             }
 
