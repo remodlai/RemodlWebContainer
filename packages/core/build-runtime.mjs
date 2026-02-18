@@ -195,3 +195,50 @@ await fs.writeFile(path.join(outDir, 'bundle-hash.txt'), hash);
 const sizeKB = (content.length / 1024).toFixed(0);
 console.log(`Runtime bundle: remodl-webcontainer.${hash}.js (${sizeKB} KB)`);
 console.log(`Hash: ${hash}`);
+
+// Generate builtins manifest
+const builtinsDir = path.join(__dirname, 'src/builtins');
+const nodeDir = path.join(builtinsDir, 'node');
+
+async function readDirRecursiveManifest(dir, basePath = '') {
+  const entries_list = [];
+  let entries;
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return entries_list; }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      // Emit directory entry before its contents
+      entries_list.push({ path: `/builtins/node/${relativePath}`, content: null, mode: 16877, isDir: true });
+      entries_list.push(...await readDirRecursiveManifest(fullPath, relativePath));
+    } else if (entry.name.endsWith('.js')) {
+      const fileContent = await fs.readFile(fullPath, 'utf8');
+      entries_list.push({ path: `/builtins/node/${relativePath}`, content: fileContent, isDir: false });
+    }
+  }
+  return entries_list;
+}
+
+const manifest = [
+  { path: '/builtins', content: null, mode: 16877, isDir: true },
+  { path: '/builtins/node', content: null, mode: 16877, isDir: true },
+];
+
+// Add primordials.js
+try {
+  const primordialsContent = await fs.readFile(path.join(builtinsDir, 'primordials.js'), 'utf8');
+  manifest.push({ path: '/builtins/primordials.js', content: primordialsContent, isDir: false });
+} catch {}
+
+// Add internalBinding.cjs
+try {
+  const internalBindingContent = await fs.readFile(path.join(builtinsDir, 'internalBinding.cjs'), 'utf8');
+  manifest.push({ path: '/builtins/internalBinding.cjs', content: internalBindingContent, isDir: false });
+} catch {}
+
+// Add node/* files and directories
+manifest.push(...await readDirRecursiveManifest(nodeDir));
+
+const manifestPath = path.join(outDir, 'builtins-manifest.json');
+await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+console.log(`Builtins manifest: builtins-manifest.json (${manifest.length} entries)`);

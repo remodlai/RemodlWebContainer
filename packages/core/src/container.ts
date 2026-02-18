@@ -322,12 +322,6 @@ export class RemodlWebContainer {
             // Create ZenFSCore - it will use the configured global fs
             const fileSystem = new ZenFSCore();
 
-            // Ensure agent workspace directories exist
-            await RemodlWebContainer.ensureAgentWorkspaceStructure(fileSystem, log);
-
-            // Copy builtin files to ZenFS
-            await RemodlWebContainer.copyBuiltinFiles(fileSystem, log);
-
             log('Anvil filesystem initialization complete');
 
             return {
@@ -345,41 +339,6 @@ export class RemodlWebContainer {
                 fileSystem: new ZenFSCore(),
                 agentWorkspaceReady: false,
             };
-        }
-    }
-
-    /**
-     * Ensure the agent workspace has the expected directory structure
-     */
-    private static async ensureAgentWorkspaceStructure(
-        fileSystem: IFileSystem,
-        log: (...args: any[]) => void
-    ): Promise<void> {
-        const dirs = [
-            '/.agent-workspace/memory',
-            '/.agent-workspace/memory/agent',
-            '/.agent-workspace/memory/agent/shared',
-            '/.agent-workspace/sessions',
-            '/.agent-workspace/tools',
-            '/.agent-workspace/conversations',
-            '/.agent-workspace/analysis',
-            '/.agent-workspace/planning',
-            '/.agent-workspace/drafts',
-            '/.agent-workspace/logs',
-            '/.agent-workspace/bin',
-        ];
-
-        for (const dir of dirs) {
-            try {
-                await fs.promises.mkdir(dir, { recursive: true });
-                log(`Created directory: ${dir}`);
-            } catch (e: any) {
-                if (e?.code === 'EEXIST') {
-                    log(`Directory already exists: ${dir}`);
-                } else {
-                    log(`Error creating directory ${dir}:`, e);
-                }
-            }
         }
     }
 

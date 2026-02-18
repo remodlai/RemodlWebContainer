@@ -44,6 +44,10 @@
 			"import": "./dist/worker-code.js",
 			"require": "./dist/worker-code.cjs"
 		},
+		"./builtins": {
+			"import": "./dist/builtins/index.js",
+			"require": "./dist/builtins/index.js"
+		},
 		"./dist/worker.global.js": "./dist/worker.global.js",
 		"./dist/emscripten-module.wasm": "./dist/emscripten-module.wasm"
 	},
