@@ -5,10 +5,19 @@
  * Extends FileSystem directly (NOT StoreFS) so ZenFS uses our path-based API.
  * StoreFS requires get(id: bigint) — incompatible with our path-based files table.
  *
+ * Schema design:
+ * - PRIMARY KEY is (path) only — the namespace IS the isolation boundary
+ * - organization_id and agent_id are audit columns only (who last wrote this file)
+ * - Never used in WHERE clauses for reads — path uniquely identifies a file
+ *
  * Pattern:
  *   openFile  → SELECT content from DB → return PreloadFile (in-memory handle)
  *   createFile → INSERT empty row     → return PreloadFile (in-memory handle)
  *   sync      → UPDATE content in DB  ← called by PreloadFile on close/flush
+ *
+ * Sync API:
+ *   Backed by Map<path, Stats> cache populated on every async operation.
+ *   statSync reads from cache — throws ENOENT on miss (not ENOSYS).
  *
  * See: dev-notes/docs/remodl-webcontainer/ZENFS-BACKEND-INTEGRATION.md
  */
@@ -36,12 +45,8 @@ export interface Backend<FS = unknown, TOptions = object> {
 /**
  * LibSQLFS — ZenFS FileSystem backed by libSQL path-based storage.
  *
- * All file operations go against the `files` table.
- *
- * Sync API: backed by a Map<path, Stats> that is populated on every async
- * operation. When ZenFS calls statSync/existsSync, we return from the Map.
- * If the path isn't in the Map yet, we throw ENOENT (not ENOSYS) so ZenFS
- * treats it as "doesn't exist" rather than "broken filesystem".
+ * The namespace provides isolation — path is the only key needed.
+ * organization_id and agent_id are audit columns written on mutations.
  */
 export class LibSQLFS extends FileSystem {
     private client: Client;
@@ -75,45 +80,59 @@ export class LibSQLFS extends FileSystem {
     /**
      * Initialize schema and ensure root directory exists.
      * Called by LibSQLBackend.create() before returning the FS.
+     *
+     * Schema: PRIMARY KEY (path) — namespace provides isolation.
+     * organization_id and agent_id are audit columns only.
      */
     async initialize(): Promise<void> {
         await this.client.execute(`
             CREATE TABLE IF NOT EXISTS files (
-                path TEXT NOT NULL,
-                organization_id TEXT NOT NULL,
-                agent_id TEXT,
-                content BLOB,
-                mode INTEGER NOT NULL DEFAULT 33188,
-                uid INTEGER NOT NULL DEFAULT 1000,
-                gid INTEGER NOT NULL DEFAULT 1000,
-                size INTEGER NOT NULL DEFAULT 0,
-                atime TEXT NOT NULL,
-                mtime TEXT NOT NULL,
-                ctime TEXT NOT NULL,
-                birthtime TEXT NOT NULL,
-                PRIMARY KEY (path, organization_id, agent_id)
+                path        TEXT PRIMARY KEY,
+                content     BLOB,
+                mode        INTEGER NOT NULL DEFAULT 33188,
+                uid         INTEGER NOT NULL DEFAULT 1000,
+                gid         INTEGER NOT NULL DEFAULT 1000,
+                size        INTEGER NOT NULL DEFAULT 0,
+                atime       TEXT NOT NULL,
+                mtime       TEXT NOT NULL,
+                ctime       TEXT NOT NULL,
+                birthtime   TEXT NOT NULL,
+                organization_id TEXT,
+                agent_id        TEXT
             )
         `);
 
         await this.client.execute(`
-            CREATE INDEX IF NOT EXISTS idx_files_org_path
-            ON files(organization_id, path)
+            CREATE INDEX IF NOT EXISTS idx_files_path_prefix ON files(path)
         `);
 
         // Ensure root directory exists
-        const root = await this.client.execute({
-            sql: `SELECT 1 FROM files WHERE path = '/' AND organization_id = ?
-                  AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-            args: [this.organizationId, this.agentId, this.agentId],
-        });
-
+        const root = await this.client.execute(`SELECT 1 FROM files WHERE path = '/'`);
         if (!root.rows.length) {
             const now = new Date().toISOString();
             await this.client.execute({
-                sql: `INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
-                      VALUES ('/', ?, ?, NULL, 16877, 1000, 1000, 0, ?, ?, ?, ?)`,
-                args: [this.organizationId, this.agentId, now, now, now, now],
+                sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
+                      VALUES ('/', NULL, 16877, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)`,
+                args: [now, now, now, now, this.organizationId, this.agentId],
             });
+        }
+
+        // Pre-warm cache from all existing DB rows so statSync works immediately.
+        const existing = await this.client.execute(
+            `SELECT path, mode, size, atime, mtime, ctime, birthtime, uid, gid FROM files`
+        );
+        for (const r of existing.rows) {
+            this._cache.set(r.path as string, new Stats({
+                mode: r.mode as number,
+                size: r.size as number,
+                atimeMs: new Date(r.atime as string).getTime(),
+                mtimeMs: new Date(r.mtime as string).getTime(),
+                ctimeMs: new Date(r.ctime as string).getTime(),
+                birthtimeMs: new Date(r.birthtime as string).getTime(),
+                uid: r.uid as number,
+                gid: r.gid as number,
+                ino: 0,
+            }));
         }
     }
 
@@ -123,10 +142,8 @@ export class LibSQLFS extends FileSystem {
 
     async stat(path: string): Promise<Stats> {
         const result = await this.client.execute({
-            sql: `SELECT mode, size, atime, mtime, ctime, birthtime, uid, gid
-                  FROM files WHERE path = ? AND organization_id = ?
-                  AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-            args: [path, this.organizationId, this.agentId, this.agentId],
+            sql: `SELECT mode, size, atime, mtime, ctime, birthtime, uid, gid FROM files WHERE path = ?`,
+            args: [path],
         });
 
         if (!result.rows.length) {
@@ -164,9 +181,8 @@ export class LibSQLFS extends FileSystem {
         const stats = await this.stat(path);
 
         const result = await this.client.execute({
-            sql: `SELECT content FROM files WHERE path = ? AND organization_id = ?
-                  AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-            args: [path, this.organizationId, this.agentId, this.agentId],
+            sql: `SELECT content FROM files WHERE path = ?`,
+            args: [path],
         });
 
         const raw = result.rows[0]?.content;
@@ -202,14 +218,13 @@ export class LibSQLFS extends FileSystem {
     async createFile(path: string, flag: string, mode: number): Promise<PreloadFile<LibSQLFS>> {
         const now = new Date().toISOString();
         await this.client.execute({
-            sql: `INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
-                  VALUES (?, ?, ?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?)
-                  ON CONFLICT (path, organization_id, agent_id) DO UPDATE SET
-                    mode = excluded.mode, mtime = excluded.mtime, ctime = excluded.ctime`,
-            args: [path, this.organizationId, this.agentId, mode, now, now, now, now],
+            sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
+                  VALUES (?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT (path) DO UPDATE SET mode = excluded.mode, mtime = excluded.mtime, ctime = excluded.ctime`,
+            args: [path, mode, now, now, now, now, this.organizationId, this.agentId],
         });
 
-        const stats = await this.stat(path); // also populates cache
+        const stats = await this.stat(path);
         return new PreloadFile<LibSQLFS>(this, path, flag, stats, new Uint8Array(0));
     }
 
@@ -222,31 +237,25 @@ export class LibSQLFS extends FileSystem {
     // -------------------------------------------------------------------------
 
     async sync(path: string, data: Uint8Array, stats: Readonly<Stats>): Promise<void> {
+        this._cache.set(path, stats as Stats);
         const now = new Date().toISOString();
         const mtime = stats.mtimeMs ? new Date(stats.mtimeMs as number).toISOString() : now;
         const atime = stats.atimeMs ? new Date(stats.atimeMs as number).toISOString() : now;
         const btime = stats.birthtimeMs ? new Date(stats.birthtimeMs as number).toISOString() : now;
 
         await this.client.execute({
-            sql: `INSERT INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
+            sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT (path, organization_id, agent_id) DO UPDATE SET
-                    content = excluded.content,
-                    size = excluded.size,
-                    mode = excluded.mode,
-                    uid = excluded.uid,
-                    gid = excluded.gid,
-                    atime = excluded.atime,
-                    mtime = excluded.mtime,
-                    ctime = excluded.ctime`,
+                  ON CONFLICT (path) DO UPDATE SET
+                    content = excluded.content, size = excluded.size,
+                    mode = excluded.mode, uid = excluded.uid, gid = excluded.gid,
+                    atime = excluded.atime, mtime = excluded.mtime, ctime = excluded.ctime,
+                    organization_id = excluded.organization_id, agent_id = excluded.agent_id`,
             args: [
-                path, this.organizationId, this.agentId,
-                data,
-                stats.mode as number,
-                stats.uid as number,
-                stats.gid as number,
-                data.length,
-                atime, mtime, now, btime,
+                path, data,
+                stats.mode as number, stats.uid as number, stats.gid as number,
+                data.length, atime, mtime, now, btime,
+                this.organizationId, this.agentId,
             ],
         });
     }
@@ -266,25 +275,11 @@ export class LibSQLFS extends FileSystem {
         let args: any[];
 
         if (prefix === '/') {
-            // Root: children are paths like /foo (no second slash)
-            sql = `SELECT path FROM files
-                   WHERE organization_id = ?
-                   AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))
-                   AND path != '/'
-                   AND path LIKE '/%'
-                   AND path NOT LIKE '/%/%'`;
-            args = [this.organizationId, this.agentId, this.agentId];
+            sql = `SELECT path FROM files WHERE path != '/' AND path LIKE '/%' AND path NOT LIKE '/%/%'`;
+            args = [];
         } else {
-            sql = `SELECT path FROM files
-                   WHERE organization_id = ?
-                   AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))
-                   AND path LIKE ?
-                   AND path NOT LIKE ?`;
-            args = [
-                this.organizationId, this.agentId, this.agentId,
-                prefix + '%',
-                prefix + '%/%',
-            ];
+            sql = `SELECT path FROM files WHERE path LIKE ? AND path NOT LIKE ?`;
+            args = [prefix + '%', prefix + '%/%'];
         }
 
         const result = await this.client.execute({ sql, args });
@@ -304,11 +299,14 @@ export class LibSQLFS extends FileSystem {
 
     async mkdir(path: string, mode: number): Promise<void> {
         const now = new Date().toISOString();
+        const dirMode = mode || 16877;
         await this.client.execute({
-            sql: `INSERT OR IGNORE INTO files (path, organization_id, agent_id, content, mode, uid, gid, size, atime, mtime, ctime, birthtime)
-                  VALUES (?, ?, ?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?)`,
-            args: [path, this.organizationId, this.agentId, mode || 16877, now, now, now, now],
+            sql: `INSERT INTO files (path, content, mode, uid, gid, size, atime, mtime, ctime, birthtime, organization_id, agent_id)
+                  VALUES (?, NULL, ?, 1000, 1000, 0, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT (path) DO NOTHING`,
+            args: [path, dirMode, now, now, now, now, this.organizationId, this.agentId],
         });
+        this._cache.set(path, new Stats({ mode: dirMode, size: 0, atimeMs: Date.now(), mtimeMs: Date.now(), ctimeMs: Date.now(), birthtimeMs: Date.now(), uid: 1000, gid: 1000, ino: 0 }));
     }
 
     mkdirSync(_path: string, _mode: number): void {
@@ -320,11 +318,8 @@ export class LibSQLFS extends FileSystem {
     // -------------------------------------------------------------------------
 
     async unlink(path: string): Promise<void> {
-        await this.client.execute({
-            sql: `DELETE FROM files WHERE path = ? AND organization_id = ?
-                  AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-            args: [path, this.organizationId, this.agentId, this.agentId],
-        });
+        await this.client.execute({ sql: `DELETE FROM files WHERE path = ?`, args: [path] });
+        this._cache.delete(path);
     }
 
     unlinkSync(_path: string): void {
@@ -345,10 +340,12 @@ export class LibSQLFS extends FileSystem {
 
     async rename(oldPath: string, newPath: string): Promise<void> {
         await this.client.execute({
-            sql: `UPDATE files SET path = ? WHERE path = ? AND organization_id = ?
-                  AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))`,
-            args: [newPath, oldPath, this.organizationId, this.agentId, this.agentId],
+            sql: `UPDATE files SET path = ? WHERE path = ?`,
+            args: [newPath, oldPath],
         });
+        const cached = this._cache.get(oldPath);
+        this._cache.delete(oldPath);
+        if (cached) this._cache.set(newPath, cached);
     }
 
     renameSync(_oldPath: string, _newPath: string): void {
@@ -356,7 +353,7 @@ export class LibSQLFS extends FileSystem {
     }
 
     // -------------------------------------------------------------------------
-    // link — not supported (no symlinks in libSQL FS)
+    // link
     // -------------------------------------------------------------------------
 
     async link(_target: string, _link: string): Promise<void> {
@@ -404,7 +401,7 @@ export const LibSQLBackend: Backend<LibSQLFS, LibSQLBackendOptions> = {
 };
 
 // -------------------------------------------------------------------------
-// Helpers (kept for use by container.ts textSearch and other direct queries)
+// Helpers (kept for textSearch and direct queries in container.ts)
 // -------------------------------------------------------------------------
 
 export async function createLibSQLStore(options: LibSQLBackendOptions): Promise<LibSQLStore> {
@@ -416,28 +413,16 @@ export async function createLibSQLStore(options: LibSQLBackendOptions): Promise<
     return store;
 }
 
-export async function forkTemplate(
-    serverUrl: string,
-    templateNamespace: string,
-    targetNamespace: string,
-    authToken?: string
-): Promise<boolean> {
-    const url = `${serverUrl}/v1/namespaces/${templateNamespace}/fork/${targetNamespace}`;
+export async function forkTemplate(serverUrl: string, templateNamespace: string, targetNamespace: string, authToken?: string): Promise<boolean> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     try {
-        const response = await fetch(url, { method: 'POST', headers });
+        const response = await fetch(`${serverUrl}/v1/namespaces/${templateNamespace}/fork/${targetNamespace}`, { method: 'POST', headers });
         return response.ok;
-    } catch {
-        return false;
-    }
+    } catch { return false; }
 }
 
-export async function namespaceExists(
-    serverUrl: string,
-    namespace: string,
-    authToken?: string
-): Promise<boolean> {
+export async function namespaceExists(serverUrl: string, namespace: string, authToken?: string): Promise<boolean> {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     try {
@@ -445,26 +430,16 @@ export async function namespaceExists(
         if (!response.ok) return false;
         const data = await response.json();
         return (data.namespaces || []).includes(namespace);
-    } catch {
-        return false;
-    }
+    } catch { return false; }
 }
 
-export async function createNamespace(
-    serverUrl: string,
-    namespace: string,
-    authToken?: string
-): Promise<boolean> {
+export async function createNamespace(serverUrl: string, namespace: string, authToken?: string): Promise<boolean> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     try {
-        const response = await fetch(`${serverUrl}/v1/namespaces/${namespace}/create`, {
-            method: 'POST', headers,
-        });
+        const response = await fetch(`${serverUrl}/v1/namespaces/${namespace}/create`, { method: 'POST', headers });
         return response.ok;
-    } catch {
-        return false;
-    }
+    } catch { return false; }
 }
 
 export { LibSQLBackend as LibSQL };

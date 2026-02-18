@@ -133,7 +133,7 @@ export class RemodlWebContainer {
     static async create(options: ContainerOptions = {}): Promise<RemodlWebContainer> {
         const debug = options.debug || false;
         const log = (...args: any[]) => {
-            if (debug) console.log('[Container.create]', ...args);
+            if (debug) console.log('[Anvil]', ...args);
         };
 
         log('Starting container initialization...');
@@ -471,7 +471,7 @@ export class RemodlWebContainer {
 
     private debugLog(...args: any[]): void {
         if (this.debugMode) {
-            console.log('[Container]', ...args);
+            console.log('[Anvil]', ...args);
         }
     }
 
