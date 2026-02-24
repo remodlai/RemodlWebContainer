@@ -1,0 +1,16 @@
+name = "cors-proxy"
+main = "index.ts"
+compatibility_date = "2024-01-01"
+
+# Production deployment
+[env.production]
+name = "cors-proxy"
+route = "cors-proxy.remodl.workers.dev/*"
+
+# Development deployment
+[env.dev]
+name = "cors-proxy-dev"
+
+# Optional: Set allowed origins (comma-separated or '*')
+# [env.production.vars]
+# ALLOWED_ORIGINS = "*"

@@ -201,8 +201,6 @@ export function createSecureContext(options?: any): any {
   return options || {};
 }
 
-export { TLSSocket };
-
 export default {
   connect,
   createServer,

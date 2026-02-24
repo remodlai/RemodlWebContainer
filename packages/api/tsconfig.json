@@ -36,8 +36,8 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     // Projects
-    "composite": true,
-    "incremental": true,
+    // "composite": true,  // Disabled - tsup handles build
+    // "incremental": true,  // Disabled - conflicts with tsup DTS generation
     // Skip type checking of declaration files
     "skipLibCheck": true
   },

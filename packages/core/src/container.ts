@@ -9,7 +9,7 @@ import { NetworkManager } from "network/manager";
 import { ServerType, VirtualServer } from "./network/types";
 import { NetworkStats } from "./network/types";
 import { HostRequest } from "process/executors/node/modules/network-module";
-import { configure } from '@zenfs/core';
+import { configure, fs } from '@zenfs/core';
 import { LibSQLBackend, type LibSQLBackendOptions } from "./backends/libsql";
 import { LibSQLStore } from "./backends/libsql/store";
 import { createClient } from '@libsql/client';
@@ -33,7 +33,8 @@ export interface FilesystemConfig {
     userId: string;
     agentId: string;
     sessionId: string;
-    projectId?: string;
+    projectId: string;
+    /** libsql-server URL. Use '/db' for same-origin proxy via Session Worker, or absolute URL for direct access */
     syncUrl: string;
     authToken?: string;
 }
@@ -132,7 +133,7 @@ export class RemodlWebContainer {
     static async create(options: ContainerOptions = {}): Promise<RemodlWebContainer> {
         const debug = options.debug || false;
         const log = (...args: any[]) => {
-            if (debug) console.log('[Container.create]', ...args);
+            if (debug) console.log('[Anvil]', ...args);
         };
 
         log('Starting container initialization...');
@@ -220,7 +221,7 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<InitializationResult> {
         if (options.filesystem) {
-            log('Initializing libSQL filesystem...');
+            log('Initializing Anvil filesystem...');
             return await RemodlWebContainer.initializeLibSQLFilesystem(options.filesystem, log);
         } else {
             log('Using default in-memory ZenFS');
@@ -244,8 +245,8 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<InitializationResult> {
         // Build namespace paths
-        const projectNamespace = `org-${config.organizationId}/project-${config.projectId || 'default'}`;
-        const agentNamespace = `org-${config.organizationId}/session-${config.sessionId}`;
+        const projectNamespace = `org-${config.organizationId}-project-${config.projectId}`;
+        const agentNamespace = `${projectNamespace}-agent-workspace`;
 
         log('Configuring mounts:', {
             projectNamespace,
@@ -253,10 +254,19 @@ export class RemodlWebContainer {
             syncUrl: config.syncUrl,
         });
 
-        // Build mount configuration
+        // Use same-origin /db/{namespace} proxy route → Outbound Worker → libSQL
+        // libSQL client appends /v2/pipeline to the base URL, so:
+        //   URL: {origin}/db/{namespace} → client calls {origin}/db/{namespace}/v2/pipeline
+        //   Outbound Worker parses: /db/{namespace}/v2/pipeline → routes to libSQL with x-namespace header
+        // Trailing slash is REQUIRED: libSQL client uses relative URL resolution (new URL('v2/pipeline', base))
+        // Without it: /db/namespace → resolves to /db/v2/pipeline (namespace dropped)
+        // With it:    /db/namespace/ → resolves to /db/namespace/v2/pipeline (correct)
+        const origin = typeof self !== 'undefined' && self.location ? self.location.origin : '';
+        const projectUrl = origin ? `${origin}/db/${projectNamespace}/` : `/db/${projectNamespace}/`;
+        const agentUrl = origin ? `${origin}/db/${agentNamespace}/` : `/db/${agentNamespace}/`;
+
         const projectOptions: LibSQLBackendOptions = {
-            url: `file:/project-${config.projectId || 'default'}.db`,
-            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${projectNamespace}` : undefined,
+            url: projectUrl || ':memory:',  // Remote URL, fallback to memory
             authToken: config.authToken,
             organizationId: config.organizationId,
             agentId: null, // Project FS has no agent
@@ -264,8 +274,7 @@ export class RemodlWebContainer {
         };
 
         const agentOptions: LibSQLBackendOptions = {
-            url: `file:/agent-${config.sessionId}.db`,
-            syncUrl: config.syncUrl ? `${config.syncUrl}/v1/namespaces/${agentNamespace}` : undefined,
+            url: agentUrl || ':memory:',  // Remote URL, fallback to memory
             authToken: config.authToken,
             organizationId: config.organizationId,
             agentId: config.agentId,
@@ -292,7 +301,7 @@ export class RemodlWebContainer {
             // Initialize stores (creates schema if needed)
             await projectStore.initialize();
             await agentStore.initialize();
-            log('LibSQL stores initialized for direct queries');
+            log('Anvil stores initialized for direct queries');
 
             // Configure ZenFS with dual mounts
             await configure({
@@ -308,18 +317,12 @@ export class RemodlWebContainer {
                 },
             });
 
-            log('ZenFS configured with libSQL mounts');
+            log('ZenFS configured with Anvil mounts');
 
             // Create ZenFSCore - it will use the configured global fs
             const fileSystem = new ZenFSCore();
 
-            // Ensure agent workspace directories exist
-            await RemodlWebContainer.ensureAgentWorkspaceStructure(fileSystem, log);
-
-            // Copy builtin files to ZenFS
-            await RemodlWebContainer.copyBuiltinFiles(fileSystem, log);
-
-            log('libSQL filesystem initialization complete');
+            log('Anvil filesystem initialization complete');
 
             return {
                 fileSystem,
@@ -328,7 +331,7 @@ export class RemodlWebContainer {
                 agentStore,
             };
         } catch (error) {
-            log('libSQL filesystem initialization failed:', error);
+            log('Anvil filesystem initialization failed:', error);
             log('Falling back to in-memory ZenFS');
 
             // Fall back to in-memory ZenFS
@@ -340,38 +343,6 @@ export class RemodlWebContainer {
     }
 
     /**
-     * Ensure the agent workspace has the expected directory structure
-     */
-    private static async ensureAgentWorkspaceStructure(
-        fileSystem: IFileSystem,
-        log: (...args: any[]) => void
-    ): Promise<void> {
-        const dirs = [
-            '/.agent-workspace/memory',
-            '/.agent-workspace/memory/agent',
-            '/.agent-workspace/memory/agent/shared',
-            '/.agent-workspace/conversations',
-            '/.agent-workspace/analysis',
-            '/.agent-workspace/planning',
-            '/.agent-workspace/drafts',
-            '/.agent-workspace/logs',
-            '/.agent-workspace/bin',
-        ];
-
-        for (const dir of dirs) {
-            try {
-                if (!fileSystem.fileExists(dir)) {
-                    fileSystem.createDirectory(dir);
-                    log(`Created directory: ${dir}`);
-                }
-            } catch (e) {
-                // Directory might already exist
-                log(`Directory already exists or error: ${dir}`);
-            }
-        }
-    }
-
-    /**
      * Copy Node.js builtin files to ZenFS for runtime access
      */
     private static async copyBuiltinFiles(
@@ -379,31 +350,35 @@ export class RemodlWebContainer {
         log: (...args: any[]) => void
     ): Promise<void> {
         try {
-            // Create /builtins directory
-            if (!fileSystem.fileExists('/builtins')) {
-                fileSystem.createDirectory('/builtins');
-                log('Created /builtins directory');
-            }
+            // Create /builtins and /builtins/node directories
+            await fs.promises.mkdir('/builtins/node', { recursive: true });
+            log('Created /builtins directories');
 
             // Use static imports from builtins index (bundled at build time)
-            fileSystem.writeFile('/builtins/primordials.js', builtinSources['primordials.js']);
-            fileSystem.writeFile('/builtins/internalBinding.cjs', builtinSources['internalBinding.cjs']);
+            await fs.promises.writeFile('/builtins/primordials.js', builtinSources['primordials.js']);
+            await fs.promises.writeFile('/builtins/internalBinding.cjs', builtinSources['internalBinding.cjs']);
             log('Copied primordials and internalBinding');
 
             // Copy ALL Node.js builtin source files from static imports
             log('Copying Node.js builtin files...');
 
+            // Collect unique parent directories and create them first
+            const dirsNeeded = new Set<string>();
+            for (const path of Object.keys(nodeBuiltinSources)) {
+                const targetPath = `/builtins/node/${path}`;
+                const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
+                if (dirPath) {
+                    dirsNeeded.add(dirPath);
+                }
+            }
+            for (const dir of dirsNeeded) {
+                await fs.promises.mkdir(dir, { recursive: true });
+            }
+
             let copiedCount = 0;
             for (const [path, content] of Object.entries(nodeBuiltinSources)) {
                 const targetPath = `/builtins/node/${path}`;
-
-                // Ensure parent directory exists
-                const dirPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
-                if (dirPath && !fileSystem.fileExists(dirPath)) {
-                    fileSystem.createDirectory(dirPath);
-                }
-
-                fileSystem.writeFile(targetPath, content);
+                await fs.promises.writeFile(targetPath, content);
                 copiedCount++;
             }
 
@@ -460,7 +435,7 @@ export class RemodlWebContainer {
 
     private debugLog(...args: any[]): void {
         if (this.debugMode) {
-            console.log('[Container]', ...args);
+            console.log('[Anvil]', ...args);
         }
     }
 

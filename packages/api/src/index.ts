@@ -46,7 +46,6 @@ export class WebContainerComlink {
   }
 }
 
-// Lower-level APIs (for advanced usage)
-export * from './container';
-export * from './process';
-export * from './worker';
+// Note: Lower-level APIs (ContainerManager, VirtualProcess, WorkerBridge) are NOT exported.
+// They run inside the iframe runtime (served from R2), not in the parent app.
+// The thin client communicates with them via Comlink over MessagePort.

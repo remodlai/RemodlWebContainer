@@ -5,15 +5,13 @@
  * All operations go through the WebContainer's ZenFS instance.
  */
 
-import type { WebContainerFs } from '../filesystem';
+let _webcontainer: { fs: any } | null = null;
 
-let _webcontainer: { fs: WebContainerFs } | null = null;
-
-export function setWebContainer(wc: { fs: WebContainerFs }): void {
+export function setWebContainer(wc: { fs: any }): void {
   _webcontainer = wc;
 }
 
-function getFS(): WebContainerFs {
+function getFS(): any {
   if (!_webcontainer) {
     throw new Error('WebContainer not initialized. Call setWebContainer() first.');
   }

@@ -7,6 +7,7 @@
  * - Use Web Crypto for random number generation (crypto.getRandomValues)
  */
 
+// @ts-ignore - crypto-browserify types not available
 import * as cryptoBrowserify from 'crypto-browserify';
 import { Buffer } from 'buffer';
 

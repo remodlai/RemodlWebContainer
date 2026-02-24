@@ -199,7 +199,11 @@ export class Socket extends EventEmitter {
     callback?: (err?: Error) => void
   ): Promise<void> {
     try {
-      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, encoding);
+      const buffer = Buffer.isBuffer(data)
+        ? data
+        : typeof data === 'string'
+          ? Buffer.from(data, encoding)
+          : Buffer.from(data);
 
       this._ws!.send(JSON.stringify({
         type: 'write',
@@ -467,8 +471,6 @@ export function isIPv4(input: string): boolean {
 export function isIPv6(input: string): boolean {
   return /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(input);
 }
-
-export { Socket, Server };
 
 export default {
   Socket,

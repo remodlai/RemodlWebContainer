@@ -39,7 +39,7 @@ export class ContainerManager {
         };
 
         this.processes = new Map();
-        this.worker = new WorkerBridge();
+        this.worker = new WorkerBridge(options.baseUrl);
         this.ready = this.initialize();
         this.onServerListen = options.onServerListen;
         this.onServerClose = options.onServerClose;

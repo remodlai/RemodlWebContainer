@@ -144,6 +144,7 @@ export type WorkerRequestMessage =
     | { type: 'deleteDirectory'; payload: FileSystemPayload['deleteDirectory']; }
     | { type: 'httpRequest'; payload: { request: HttpRequestPayload; port: number } }
     | { type: 'listServers' }
+    | { type: 'textSearch'; payload: { query: string; options?: any } }
     ;
 
 
@@ -182,6 +183,7 @@ export type WorkerResponseMessage =
     | { type: 'serverList'; payload: GetServersResponsePayload }
     | { type: 'onServerListen'; payload: ServerListenPayload }
     | { type: 'onServerClose'; payload: ServerClosePayload }
+    | { type: 'textSearchResult'; payload: any }
 
 
 export type WorkerMessage = WorkerMessageBase & (WorkerRequestMessage | WorkerResponseMessage);
