@@ -1,5 +1,5 @@
 {
-	"name": "@remodl-web-container/api",
+	"name": "@remodlai/webcontainer-api",
 	"version": "0.1.0",
 	"type": "module",
 	"main": "dist/index.js",
